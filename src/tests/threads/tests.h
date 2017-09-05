@@ -5,6 +5,7 @@ void run_test (const char *);
 
 typedef void test_func (void);
 
+extern test_func test_hello;
 extern test_func test_alarm_single;
 extern test_func test_alarm_multiple;
 extern test_func test_alarm_simultaneous;
