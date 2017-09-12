@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <round.h>
 #include <stdio.h>
+#include <list.h>
 #include "threads/interrupt.h"
 #include "threads/io.h"
 #include "threads/synch.h"
@@ -24,6 +25,9 @@ static int64_t ticks;
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
 
+/* sleeping thread list */
+struct list sleeping_thread_list;
+
 static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
@@ -43,6 +47,7 @@ timer_init (void)
   outb (0x40, count & 0xff);
   outb (0x40, count >> 8);
 
+  list_init (&sleeping_thread_list);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 }
 
@@ -94,13 +99,17 @@ timer_elapsed (int64_t then)
 
 /* Suspends execution for approximately TICKS timer ticks. */
 void
-timer_sleep (int64_t ticks) 
+timer_sleep (int64_t sleep_ticks) 
 {
-  int64_t start = timer_ticks ();
-
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  enum intr_level old_level = intr_disable ();
+  struct thread *t = thread_current ();
+  /* 끝나는 시간 저장 */
+  t->sleep_end_tick = ticks + sleep_ticks;
+  /* list에 저장 */
+  list_push_back (&sleeping_thread_list, &t->elem);
+  thread_block ();
+  intr_set_level (old_level);
 }
 
 /* Suspends execution for approximately MS milliseconds. */
@@ -136,6 +145,22 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
+  /* checks sleeping thread.*/
+  struct list_elem *e;
+  for (e = list_begin (&sleeping_thread_list);
+       e != list_end (&sleeping_thread_list);)
+    {
+      struct thread *t = list_entry (e, struct thread, elem);
+      if (t->sleep_end_tick <= ticks)
+        {
+          e = list_remove(e);
+          thread_unblock (t);
+        }
+      else
+        {
+          e = list_next(e);
+        }
+    }
   thread_tick ();
 }
 
