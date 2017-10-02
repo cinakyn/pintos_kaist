@@ -26,31 +26,31 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t
-process_execute (const char *file_name) 
+process_execute (const char *cmd_line) 
 {
-  char *fn_copy;
+  char *cmd_copy;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+  cmd_copy = palloc_get_page (0);
+  if (cmd_copy == NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  strlcpy (cmd_copy, cmd_line, PGSIZE);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (cmd_line, PRI_DEFAULT, start_process, cmd_copy);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    palloc_free_page (cmd_copy);
   return tid;
 }
 
 /* A thread function that loads a user process and makes it start
    running. */
 static void
-start_process (void *f_name)
+start_process (void *aux)
 {
-  char *file_name = f_name;
+  char *cmd_line = aux;
   struct intr_frame if_;
   bool success;
 
@@ -59,10 +59,10 @@ start_process (void *f_name)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+  success = load (cmd_line, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  palloc_free_page (aux);
   if (!success) 
     thread_exit ();
 
@@ -88,6 +88,8 @@ start_process (void *f_name)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+  int a, b;
+  while (true) { a = b; b = a;}
   return -1;
 }
 
@@ -195,7 +197,7 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, const char *cmd_line);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -206,7 +208,7 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool
-load (const char *file_name, void (**eip) (void), void **esp) 
+load (const char *cmd_line, void (**eip) (void), void **esp) 
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
@@ -222,6 +224,17 @@ load (const char *file_name, void (**eip) (void), void **esp)
   process_activate ();
 
   /* Open executable file. */
+  char file_name[1024];
+  size_t index = 0;
+  char temp_c = cmd_line[index];
+  while (temp_c != ' ' && temp_c != '\0')
+    {
+      file_name[index] = cmd_line[index];
+      index += 1;
+      temp_c = cmd_line[index];
+      ASSERT (index < 1023);
+    }
+  file_name[index] = '\0';
   file = filesys_open (file_name);
   if (file == NULL) 
     {
@@ -302,7 +315,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  if (!setup_stack (esp, cmd_line))
     goto done;
 
   /* Start address. */
@@ -427,20 +440,54 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp, const char *cmd_line) 
 {
   uint8_t *kpage;
   bool success = false;
+  size_t cpy_dst_size;
 
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if (kpage != NULL) 
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        *esp = PHYS_BASE;
+        {
+          *esp = PHYS_BASE;
+          /* argument pass */
+
+          // copy cmd
+          cpy_dst_size = (strlen (cmd_line) + 1) * sizeof (char);
+          *esp = *esp - cpy_dst_size;
+          strlcpy (*esp, cmd_line, cpy_dst_size);
+          char *cmd_copy = *esp;
+          // word align
+          *esp = *esp - ((size_t)(*esp)) % 4;
+          // tokenize
+          *esp = *esp - sizeof (char *);
+          memset (*esp, 0, sizeof (char *));
+          int argc = 0;
+          char *token, *save_ptr;
+          for (token = strtok_r (cmd_copy, " ", &save_ptr);
+               token != NULL;
+               token = strtok_r (NULL, " ", &save_ptr))
+            {
+              argc += 1;
+              *esp = *esp - sizeof (char *);
+              memcpy (*esp, &token, sizeof (char *));
+            }
+          // others
+          char *argv = *esp;
+          *esp = *esp - sizeof (char *);
+          memcpy (*esp, &argv, sizeof (argv));
+          *esp = *esp - sizeof (int);
+          memcpy (*esp, &argc, sizeof (argc));
+          *esp = *esp - sizeof (void *);
+          memset (*esp, 0, sizeof (char *));
+        }
       else
         palloc_free_page (kpage);
     }
+  hex_dump (0, *esp, 128, true);
   return success;
 }
 
