@@ -17,9 +17,49 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 
 static thread_func start_process NO_RETURN;
+static pid_t get_next_pid (void);
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static void process_info_init (struct process_info *info, tid_t tid);
+static pid_t next_pid;
+static struct lock pid_lock;
+static struct list pinfo_list;
+static struct lock pinfo_list_lock;
+
+struct process_start_info
+{
+  char *cmd_line;
+  struct semaphore sema_ready;
+  struct semaphore sema_done;
+  bool success;
+};
+
+/* get next pid_t to use */
+static pid_t
+get_next_pid (void)
+{
+  lock_acquire (&pid_lock);
+  pid_t result = next_pid++;
+  lock_release (&pid_lock);
+  return result;
+}
+
+/* intialize procss system. */
+void
+process_init (void)
+{
+  next_pid = 10000;
+  lock_init (&pid_lock);
+  list_init (&pinfo_list);
+  lock_init (&pinfo_list_lock);
+
+  /* init process. */
+  struct process_info *info = calloc (sizeof (struct process_info), 1);
+  ASSERT (info != NULL);
+  process_info_init (info, thread_current()->tid);
+}
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -31,6 +71,10 @@ process_execute (const char *cmd_line)
   char *cmd_copy;
   tid_t tid;
 
+  /* limit cmd_line */
+  if (strlen (cmd_line) * sizeof (char) > 1024)
+    return TID_ERROR;
+
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   cmd_copy = palloc_get_page (0);
@@ -38,21 +82,83 @@ process_execute (const char *cmd_line)
     return TID_ERROR;
   strlcpy (cmd_copy, cmd_line, PGSIZE);
 
+  /* Allocate process info */
+  struct process_info *info = calloc (sizeof (struct process_info), 1);
+  if (info == NULL)
+    return TID_ERROR;
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (cmd_line, PRI_DEFAULT, start_process, cmd_copy);
+  struct process_start_info start_info;
+  start_info.success = false;
+  start_info.cmd_line = cmd_copy;
+  sema_init (&start_info.sema_ready, 0);
+  sema_init (&start_info.sema_done, 0);
+  tid = thread_create (cmd_line, PRI_DEFAULT, start_process, &start_info);
   if (tid == TID_ERROR)
     palloc_free_page (cmd_copy);
-  return tid;
+
+  /* set process info */
+  process_info_init (info, tid);
+  // add to parent
+  struct process_info *parent_info = process_get_info (thread_current ()->tid);
+  lock_acquire (&parent_info->info_lock);
+  size_t i;
+  for (i = 0;
+       i < sizeof (parent_info->children) / sizeof (parent_info->children[0]);
+       ++i)
+    {
+      if (parent_info->children[i] == NULL)
+      {
+        parent_info->children[i] = info;
+        break;
+      }
+    }
+  ASSERT (i < sizeof (parent_info->children) / sizeof (parent_info->children[0]));
+  info->parent = parent_info;
+  lock_release (&parent_info->info_lock);
+  sema_up (&start_info.sema_ready);
+  sema_down (&start_info.sema_done);
+  if (start_info.success)
+    {
+      return tid;
+    }
+  else
+    {
+      return -1;
+    }
 }
+
+static void 
+process_info_init (struct process_info *info, tid_t tid)
+{
+  info->inner_thread = tid;
+  info->parent = NULL;
+  info->pid = get_next_pid ();
+  info->name = NULL;
+  info->terminated = false;
+  info->exec_file = NULL;
+  memset (info->children, 0, sizeof (info->children));
+  memset (info->owned_files, 0, sizeof (info->owned_files));
+  lock_init (&info->wait_lock);
+  lock_init (&info->info_lock);
+  cond_init (&info->wait_cond);
+  lock_acquire (&pinfo_list_lock);
+  {
+    list_push_back (&pinfo_list, &info->elem);
+  }
+  lock_release (&pinfo_list_lock);
+}
+
 
 /* A thread function that loads a user process and makes it start
    running. */
 static void
 start_process (void *aux)
 {
-  char *cmd_line = aux;
   struct intr_frame if_;
   bool success;
+  struct process_start_info* start_info = aux;
+  char* cmd_line = start_info->cmd_line;
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -60,9 +166,10 @@ start_process (void *aux)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (cmd_line, &if_.eip, &if_.esp);
-
+  start_info->success = success;
+  sema_up (&start_info->sema_done);
   /* If load failed, quit. */
-  palloc_free_page (aux);
+  palloc_free_page (cmd_line);
   if (!success) 
     thread_exit ();
 
@@ -86,11 +193,63 @@ start_process (void *aux)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  int a, b;
-  while (true) { a = b; b = a;}
-  return -1;
+  // find child.
+  struct process_info* info = process_get_info (thread_current()->tid);
+  struct process_info* child_info = NULL;
+  lock_acquire (&info->info_lock);
+  {
+    size_t i;
+    for (i = 0; 
+         i < sizeof (info->children) / sizeof (info->children[0]);
+         ++i)
+      {
+        struct process_info *temp = info->children[i];
+        if (temp != NULL && temp->inner_thread == child_tid)
+          {
+            ASSERT (child_info == NULL);
+            child_info = temp;
+          }
+      }
+  }
+  lock_release (&info->info_lock);
+  // get status.
+  if (child_info == NULL)
+    {
+      return -1;
+    }
+  else
+    {
+      while (!child_info->terminated)
+        {
+          lock_acquire (&info->wait_lock);
+          cond_wait (&info->wait_cond, &info->wait_lock);
+          lock_release (&info->wait_lock);
+        }
+      ASSERT (child_info->terminated);
+      int result = child_info->status;
+      // remove child.
+      size_t i;
+      for (i = 0; 
+           i < sizeof (info->children) / sizeof (info->children[0]);
+           ++i)
+        {
+          if (info->children[i] == child_info)
+            {
+              info->children[i] = NULL;
+            }
+        }
+      lock_acquire (&pinfo_list_lock);
+      list_remove (&child_info->elem);
+      lock_release (&pinfo_list_lock);
+      if (child_info->name != NULL)
+      {
+        free (child_info->name);
+      }
+      free (child_info);
+      return result;
+    }
 }
 
 /* Free the current process's resources. */
@@ -99,6 +258,32 @@ process_exit (void)
 {
   struct thread *curr = thread_current ();
   uint32_t *pd;
+
+  struct process_info *info = process_get_info (curr->tid);
+  struct process_info *parent_info = info->parent;
+
+  /* modidfy process info */
+  lock_acquire (&info->info_lock);
+  {
+    info->terminated = true;
+    if (info->exec_file != NULL)
+      {
+        file_close (info->exec_file);
+      }
+  }
+  lock_release (&info->info_lock);
+  /* wait children which isn't terminated. */
+  size_t i;
+  for (i = 0; 
+       i < sizeof (info->children) / sizeof (info->children[0]);
+       ++i)
+    {
+      struct process_info *child_info = info->children[i];
+      if (child_info != NULL)
+        {
+          process_wait (child_info->inner_thread);
+        }
+    }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -116,6 +301,18 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+
+  /* release waiting parent process */
+  if (parent_info != NULL)
+  {
+    lock_acquire (&parent_info->info_lock);
+    {
+      lock_acquire (&parent_info->wait_lock);
+      cond_broadcast (&parent_info->wait_cond, &parent_info->wait_lock);
+      lock_release (&parent_info->wait_lock);
+    }
+    lock_release (&parent_info->info_lock);
+  }
 }
 
 /* Sets up the CPU for running user code in the current
@@ -133,6 +330,52 @@ process_activate (void)
      interrupts. */
   tss_update ();
 }
+
+/* get process info from tid */
+struct process_info *
+process_get_info (tid_t tid)
+{
+  lock_acquire (&pinfo_list_lock);
+  struct list_elem *e;
+  struct process_info *found = NULL;
+  for (e = list_begin (&pinfo_list);
+       e != list_end (&pinfo_list);
+       e = list_next (e))
+    {
+      struct process_info *info = list_entry (e, struct process_info, elem);
+      if (info->inner_thread == tid)
+        {
+          found = info;
+          break;
+        }
+    }
+  lock_release (&pinfo_list_lock);
+  ASSERT (found != NULL);
+  return found;
+}
+
+/* get process info from pid */
+struct process_info *
+process_get_info_pid (pid_t pid)
+{
+  lock_acquire (&pinfo_list_lock);
+  struct list_elem *e;
+  struct process_info *found = NULL;
+  for (e = list_begin (&pinfo_list);
+       e != list_end (&pinfo_list);
+       e = list_next (e))
+    {
+      struct process_info *info = list_entry (e, struct process_info, elem);
+      if (info->pid == pid)
+        {
+          found = info;
+          break;
+        }
+    }
+  lock_release (&pinfo_list_lock);
+  return found;
+}
+
 
 /* We load ELF binaries.  The following definitions are taken
    from the ELF specification, [ELF1], more-or-less verbatim.  */
@@ -242,6 +485,7 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
       goto done; 
     }
 
+  file_deny_write (file);
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
@@ -325,7 +569,17 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (!success)
+    {
+      file_close (file);
+    }
+  else
+    {
+      struct process_info *info = process_get_info (thread_current ()->tid);
+      lock_acquire (&info->info_lock);
+      info->exec_file = file;
+      lock_release (&info->info_lock);
+    }
   return success;
 }
 
@@ -454,7 +708,6 @@ setup_stack (void **esp, const char *cmd_line)
         {
           *esp = PHYS_BASE;
           /* argument pass */
-
           // copy cmd
           cpy_dst_size = (strlen (cmd_line) + 1) * sizeof (char);
           *esp = *esp - cpy_dst_size;
@@ -466,28 +719,36 @@ setup_stack (void **esp, const char *cmd_line)
           *esp = *esp - sizeof (char *);
           memset (*esp, 0, sizeof (char *));
           int argc = 0;
+          char *argv[128];
           char *token, *save_ptr;
           for (token = strtok_r (cmd_copy, " ", &save_ptr);
                token != NULL;
                token = strtok_r (NULL, " ", &save_ptr))
             {
+              argv[argc] = token;
               argc += 1;
-              *esp = *esp - sizeof (char *);
-              memcpy (*esp, &token, sizeof (char *));
+              ASSERT ((size_t)argc < sizeof (argv) / sizeof (char *));
             }
+          *esp = *esp - argc * sizeof (char *);
+          memcpy (*esp, argv, argc * sizeof (char *));
           // others
-          char *argv = *esp;
-          *esp = *esp - sizeof (char *);
-          memcpy (*esp, &argv, sizeof (argv));
+          char **argv_ptr = *esp;
+          *esp = *esp - sizeof (char **);
+          memcpy (*esp, &argv_ptr, sizeof (char **));
           *esp = *esp - sizeof (int);
-          memcpy (*esp, &argc, sizeof (argc));
+          memcpy (*esp, &argc, sizeof (int));
           *esp = *esp - sizeof (void *);
-          memset (*esp, 0, sizeof (char *));
+          memset (*esp, 0, sizeof (void *));
+
+          // set proc_name for exit message
+          char **name = &(process_get_info (thread_current() ->tid)->name);
+          *name = malloc (sizeof (char) * (strlen (argv[0]) + 1));
+          memcpy (*name, argv[0], sizeof (char) * (strlen (argv[0]) + 1));
         }
       else
         palloc_free_page (kpage);
     }
-  hex_dump (0, *esp, 128, true);
+  // hex_dump (0, *esp, 128, true);
   return success;
 }
 
