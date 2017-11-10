@@ -34,6 +34,8 @@
 #include "filesys/filesys.h"
 #include "filesys/fsutil.h"
 #endif
+#include "vm/frame.h"
+#include "vm/swap.h"
 
 /* Amount of physical memory, in 4 kB pages. */
 size_t ram_pages;
@@ -87,6 +89,7 @@ main (void)
   palloc_init ();
   malloc_init ();
   paging_init ();
+  frame_init ();
 
   /* Segmentation. */
 #ifdef USERPROG
@@ -114,6 +117,7 @@ main (void)
   /* Initialize file system. */
   disk_init ();
   filesys_init (format_filesys);
+  swap_init ();
 #endif
 
   printf ("Boot complete.\n");
@@ -125,6 +129,8 @@ main (void)
   if (power_off_when_done)
     power_off ();
   thread_exit ();
+  frame_exit ();
+  swap_exit ();
 }
 
 /* Clear BSS and obtain RAM size from loader. */

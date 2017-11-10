@@ -29,7 +29,6 @@ static void syscall_close (void *sp, struct intr_frame *);
 static bool convert_addr (const void *vaddr, size_t size, void **paddr);
 static bool convert_str (const char *vaddr, char **paddr);
 static struct file *get_file (int fd);
-static void set_file (int fd, struct file *);
 static struct lock filesys_lock;
 
 void
@@ -616,7 +615,7 @@ get_file (int fd)
   struct process_info *proc_info = process_get_info (thread_current ()->tid);
   lock_acquire (&proc_info->info_lock);
   struct file* fp;
-  if (fd >= sizeof (proc_info->owned_files) / sizeof (proc_info->owned_files[0]))
+  if (fd >= (int) (sizeof (proc_info->owned_files) / sizeof (proc_info->owned_files[0])))
     {
       fp = NULL;
     }

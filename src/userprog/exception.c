@@ -5,6 +5,11 @@
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "vm/swap.h"
+#include "vm/frame.h"
+#include "vm/suppage.h"
+#include "threads/pte.h"
+#include "threads/pte.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -157,6 +162,20 @@ page_fault (struct intr_frame *f)
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
-  kill (f);
+  uint32_t *pd = thread_current ()->pagedir;
+  struct suppage *sp = &thread_current ()->sp;
+  void *upage = ((uintptr_t)fault_addr & (~PGMASK));
+  struct suppage_info *sp_info = suppage_get_info (sp, upage);
+  if (sp_info == NULL)
+  {
+    kill (f);
+  }
+  if (write && !sp_info->writable)
+  {
+    kill (f);
+  }
+  ASSERT (sp_info->mt == MEM_TYPE_SWAP);
+  void *frame = frame_get (pd, upage, sp, sp_info->writable);
+  swap_in (sp_info->index, frame);
 }
 

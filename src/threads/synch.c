@@ -179,6 +179,7 @@ lock_init (struct lock *lock)
   ASSERT (lock != NULL);
 
   lock->holder = NULL;
+  lock->magic = 5735735;
   sema_init (&lock->semaphore, 1);
 }
 

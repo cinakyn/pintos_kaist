@@ -18,6 +18,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
+#include "vm/frame.h"
 
 static thread_func start_process NO_RETURN;
 static pid_t get_next_pid (void);
@@ -299,6 +300,7 @@ process_exit (void)
          that's been freed (and cleared). */
       curr->pagedir = NULL;
       pagedir_activate (NULL);
+      suppage_clear (&curr->sp);
       pagedir_destroy (pd);
     }
 
@@ -465,6 +467,7 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
+  suppage_init (&t->sp, t->pagedir);
 
   /* Open executable file. */
   char file_name[1024];
@@ -585,8 +588,6 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
 
 /* load() helpers. */
 
-static bool install_page (void *upage, void *kpage, bool writable);
-
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
 static bool
@@ -664,7 +665,11 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
+      uint8_t *kpage = frame_get (
+          thread_current ()->pagedir,
+          upage,
+          &thread_current ()->sp,
+          writable);
       if (kpage == NULL)
         return false;
 
@@ -672,15 +677,17 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
           palloc_free_page (kpage);
-          return false; 
+          return false;
         }
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
-      /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
+      /* turn into readonly */
+      struct suppage_info *sp_info 
+        = suppage_get_info (&thread_current ()->sp, upage);
+      if (sp_info->writable)
         {
-          palloc_free_page (kpage);
-          return false; 
+          sp_info->writable = false;
+          pagedir_set_writable (&thread_current ()->pagedir, upage, false);
         }
 
       /* Advance. */
@@ -697,77 +704,55 @@ static bool
 setup_stack (void **esp, const char *cmd_line) 
 {
   uint8_t *kpage;
-  bool success = false;
   size_t cpy_dst_size;
 
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  kpage = frame_get (
+      thread_current ()->pagedir,
+      ((uint8_t *) PHYS_BASE) - PGSIZE,
+      &thread_current ()->sp,
+      true);
+
   if (kpage != NULL) 
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
+      *esp = PHYS_BASE;
+      /* argument pass */
+      // copy cmd
+      cpy_dst_size = (strlen (cmd_line) + 1) * sizeof (char);
+      *esp = *esp - cpy_dst_size;
+      strlcpy (*esp, cmd_line, cpy_dst_size);
+      char *cmd_copy = *esp;
+      // word align
+      *esp = *esp - ((size_t)(*esp)) % 4;
+      // tokenize
+      *esp = *esp - sizeof (char *);
+      memset (*esp, 0, sizeof (char *));
+      int argc = 0;
+      char *argv[128];
+      char *token, *save_ptr;
+      for (token = strtok_r (cmd_copy, " ", &save_ptr);
+           token != NULL;
+           token = strtok_r (NULL, " ", &save_ptr))
         {
-          *esp = PHYS_BASE;
-          /* argument pass */
-          // copy cmd
-          cpy_dst_size = (strlen (cmd_line) + 1) * sizeof (char);
-          *esp = *esp - cpy_dst_size;
-          strlcpy (*esp, cmd_line, cpy_dst_size);
-          char *cmd_copy = *esp;
-          // word align
-          *esp = *esp - ((size_t)(*esp)) % 4;
-          // tokenize
-          *esp = *esp - sizeof (char *);
-          memset (*esp, 0, sizeof (char *));
-          int argc = 0;
-          char *argv[128];
-          char *token, *save_ptr;
-          for (token = strtok_r (cmd_copy, " ", &save_ptr);
-               token != NULL;
-               token = strtok_r (NULL, " ", &save_ptr))
-            {
-              argv[argc] = token;
-              argc += 1;
-              ASSERT ((size_t)argc < sizeof (argv) / sizeof (char *));
-            }
-          *esp = *esp - argc * sizeof (char *);
-          memcpy (*esp, argv, argc * sizeof (char *));
-          // others
-          char **argv_ptr = *esp;
-          *esp = *esp - sizeof (char **);
-          memcpy (*esp, &argv_ptr, sizeof (char **));
-          *esp = *esp - sizeof (int);
-          memcpy (*esp, &argc, sizeof (int));
-          *esp = *esp - sizeof (void *);
-          memset (*esp, 0, sizeof (void *));
-
-          // set proc_name for exit message
-          char **name = &(process_get_info (thread_current() ->tid)->name);
-          *name = malloc (sizeof (char) * (strlen (argv[0]) + 1));
-          memcpy (*name, argv[0], sizeof (char) * (strlen (argv[0]) + 1));
+          argv[argc] = token;
+          argc += 1;
+          ASSERT ((size_t)argc < sizeof (argv) / sizeof (char *));
         }
-      else
-        palloc_free_page (kpage);
+      *esp = *esp - argc * sizeof (char *);
+      memcpy (*esp, argv, argc * sizeof (char *));
+      // others
+      char **argv_ptr = *esp;
+      *esp = *esp - sizeof (char **);
+      memcpy (*esp, &argv_ptr, sizeof (char **));
+      *esp = *esp - sizeof (int);
+      memcpy (*esp, &argc, sizeof (int));
+      *esp = *esp - sizeof (void *);
+      memset (*esp, 0, sizeof (void *));
+
+      // set proc_name for exit message
+      char **name = &(process_get_info (thread_current() ->tid)->name);
+      *name = malloc (sizeof (char) * (strlen (argv[0]) + 1));
+      memcpy (*name, argv[0], sizeof (char) * (strlen (argv[0]) + 1));
     }
   // hex_dump (0, *esp, 128, true);
-  return success;
-}
-
-/* Adds a mapping from user virtual address UPAGE to kernel
-   virtual address KPAGE to the page table.
-   If WRITABLE is true, the user process may modify the page;
-   otherwise, it is read-only.
-   UPAGE must not already be mapped.
-   KPAGE should probably be a page obtained from the user pool
-   with palloc_get_page().
-   Returns true on success, false if UPAGE is already mapped or
-   if memory allocation fails. */
-static bool
-install_page (void *upage, void *kpage, bool writable)
-{
-  struct thread *t = thread_current ();
-
-  /* Verify that there's not already a page at that virtual
-     address, then map our page there. */
-  return (pagedir_get_page (t->pagedir, upage) == NULL
-          && pagedir_set_page (t->pagedir, upage, kpage, writable));
+  return true;
 }
