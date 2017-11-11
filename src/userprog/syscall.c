@@ -26,8 +26,11 @@ static void syscall_write (void *sp, struct intr_frame *);
 static void syscall_seek (void *sp, struct intr_frame *);
 static void syscall_tell (void *sp, struct intr_frame *);
 static void syscall_close (void *sp, struct intr_frame *);
-static bool convert_addr (const void *vaddr, size_t size, void **paddr);
-static bool convert_str (const char *vaddr, char **paddr);
+static int get_user (const uint8_t *uaddr);
+static bool put_user (uint8_t *udst, uint8_t byte);
+static bool is_valid_addr (void *vaddr, size_t size, bool writable);
+static bool is_valid_str (char *vaddr);
+static bool copy_value (const void *from, void *to, size_t size);
 static struct file *get_file (int fd);
 static struct lock filesys_lock;
 
@@ -42,13 +45,12 @@ static void
 syscall_handler (struct intr_frame *f) 
 {
   void *sp = f->esp;
-  void *pAdd;
-  if (!convert_addr (f->esp, sizeof (int), &pAdd))
-  {
-    syscall_exit_status (-1);
-    return;
-  }
-  int call_number = *((int *)(pAdd));
+  int call_number;
+  if (!copy_value (f->esp, &call_number, sizeof (call_number)))
+    {
+      syscall_exit_status (-1);
+      return;
+    }
   sp += sizeof (int);
   switch (call_number)
     {
@@ -105,14 +107,9 @@ static void syscall_halt (void *sp UNUSED, struct intr_frame *f UNUSED)
 static void syscall_exit (void *sp, struct intr_frame *f UNUSED)
 {
   int status;
-  void *pAdd;
-  if (!convert_addr (sp, sizeof (int), &pAdd))
+  if (!copy_value (sp, &status, sizeof (status)))
     {
       status = -1;
-    }
-  else
-    {
-      status = *((int *)pAdd);
     }
   syscall_exit_status (status);
 }
@@ -143,22 +140,19 @@ void syscall_exit_status (int status)
 
 static void syscall_exec (void *sp, struct intr_frame *f)
 {
-  void *pAdd;
   char *cmd_line;
-  if (!convert_addr (sp, sizeof (char *), &pAdd))
+  if (!copy_value (sp, &cmd_line, sizeof (cmd_line)))
     {
       f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  cmd_line = *((char **)pAdd);
-  if (!convert_str (cmd_line, &cmd_line))
+  if (!is_valid_str (cmd_line))
     {
-      f->eax = -1;
-      syscall_exit_status (-1);
-      return;
+        f->eax = -1;
+        syscall_exit_status (-1);
+        return;
     }
-
   lock_acquire (&filesys_lock);
   tid_t tid = process_execute (cmd_line);
   if (tid >= 0)
@@ -175,14 +169,12 @@ static void syscall_exec (void *sp, struct intr_frame *f)
 static void syscall_wait (void *sp, struct intr_frame *f)
 {
   pid_t pid;
-  void *pAdd;
-  if (!convert_addr (sp, sizeof (pid_t), &pAdd))
+  if (!copy_value (sp, &pid, sizeof (pid)))
     {
       f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  pid = *((pid_t *) pAdd);
   struct process_info *info = process_get_info_pid (pid);
   if (info == NULL)
     {
@@ -196,30 +188,27 @@ static void syscall_wait (void *sp, struct intr_frame *f)
 
 static void syscall_create (void *sp, struct intr_frame *f)
 {
-  void *pAdd;
   char *file_name;
+  if (!copy_value (sp, &file_name, sizeof (file_name)))
+    {
+      f->eax = -1;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (!is_valid_str (file_name))
+    {
+      f->eax = -1;
+      syscall_exit_status (-1);
+      return;
+    }
+  sp += sizeof (file_name);
   unsigned initial_size;
-  if (!convert_addr (sp, sizeof (char *), &pAdd))
+  if (!copy_value (sp, &initial_size, sizeof (initial_size)))
     {
-      f->eax = false;
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  file_name = *((char **)pAdd);
-  sp += sizeof (char *);
-  if (!convert_str (file_name, &file_name))
-    {
-      f->eax = false;
-      syscall_exit_status (-1);
-      return;
-    }
-  if (!convert_addr (sp, sizeof (unsigned *), &pAdd))
-    {
-      f->eax = false;
-      syscall_exit_status (-1);
-      return;
-    }
-  initial_size = *((unsigned *)pAdd);
   lock_acquire (&filesys_lock);
   f->eax = filesys_create (file_name, initial_size);
   lock_release (&filesys_lock);
@@ -227,18 +216,16 @@ static void syscall_create (void *sp, struct intr_frame *f)
 
 static void syscall_remove (void *sp, struct intr_frame *f)
 {
-  void *pAdd;
   char *file_name;
-  if (!convert_addr (sp, sizeof (char *), &pAdd))
+  if (!copy_value (sp, &file_name, sizeof (file_name)))
     {
-      f->eax = false;
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  file_name = *((char **)pAdd);
-  if (!convert_str (file_name, &file_name))
+  if (!is_valid_str (file_name))
     {
-      f->eax = false;
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
@@ -249,15 +236,16 @@ static void syscall_remove (void *sp, struct intr_frame *f)
 
 static void syscall_open (void *sp, struct intr_frame *f)
 {
-  void *pAdd;
-  if (!convert_addr (sp, sizeof (char *), &pAdd))
+  char *file_name;
+  if (!copy_value (sp, &file_name, sizeof (file_name)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  char *file_name = *((char **)pAdd);
-  if (!convert_str (file_name, &file_name))
+  if (!is_valid_str (file_name))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
@@ -298,15 +286,14 @@ static void syscall_open (void *sp, struct intr_frame *f)
 
 static void syscall_filesize (void *sp, struct intr_frame *f)
 {
-  void *pAdd;
-  int fd;
   // get fd
-  if (!convert_addr (sp, sizeof (int), &pAdd))
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  fd = *((int *)pAdd);
 
   if (fd < 2)
     {
@@ -326,37 +313,37 @@ static void syscall_filesize (void *sp, struct intr_frame *f)
 
 static void syscall_read (void *sp, struct intr_frame *f)
 {
-  void *pAdd;
-  int fd;
-  void *buffer;
-  unsigned size;
   // get fd
-  if (!convert_addr (sp, sizeof (int), &pAdd))
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  fd = *((int *)pAdd);
-  sp += sizeof (int);
+  sp += sizeof (fd);
   //get buffer
-  if (!convert_addr (sp, sizeof (void *), &pAdd))
+  void *buffer;
+  if (!copy_value (sp, &buffer, sizeof (buffer)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  buffer = *((void **)pAdd);
-  sp += sizeof (void *);
+  sp += sizeof (buffer);
   // get size
-  if (!convert_addr (sp, sizeof (unsigned), &pAdd))
+  unsigned size;
+  if (!copy_value (sp, &size, sizeof (size)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  size = *((unsigned *)pAdd);
-  sp += sizeof (unsigned);
+  sp += sizeof (size);
   // verify buffer content
-  if (!convert_addr (buffer, size, &buffer))
+  if (!is_valid_addr (buffer, size, true))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
@@ -393,37 +380,37 @@ static void syscall_read (void *sp, struct intr_frame *f)
 
 static void syscall_write (void *sp, struct intr_frame *f)
 {
-  void *pAdd;
-  int fd;
-  void *buffer;
-  unsigned size;
   // get fd
-  if (!convert_addr (sp, sizeof (int), &pAdd))
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  fd = *((int *)pAdd);
-  sp += sizeof (int);
+  sp += sizeof (fd);
   //get buffer
-  if (!convert_addr (sp, sizeof (void *), &pAdd))
+  void *buffer;
+  if (!copy_value (sp, &buffer, sizeof (buffer)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  buffer = *((void **)pAdd);
-  sp += sizeof (void *);
+  sp += sizeof (buffer);
   // get size
-  if (!convert_addr (sp, sizeof (unsigned), &pAdd))
+  unsigned size;
+  if (!copy_value (sp, &size, sizeof (size)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  size = *((unsigned *)pAdd);
-  sp += sizeof (unsigned);
+  sp += sizeof (size);
   // verify buffer content
-  if (!convert_addr (buffer, size, &buffer))
+  if (!is_valid_addr (buffer, size, false))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
@@ -449,26 +436,24 @@ static void syscall_write (void *sp, struct intr_frame *f)
   lock_release (&filesys_lock);
 }
 
-static void syscall_seek (void *sp, struct intr_frame *f)
+static void syscall_seek (void *sp, struct intr_frame *f UNUSED)
 {
-  void *pAdd;
-  int fd;
-  unsigned position;
   // get fd
-  if (!convert_addr (sp, sizeof (int), &pAdd))
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
     {
       syscall_exit_status (-1);
       return;
     }
-  fd = *((int *)pAdd);
-  sp += sizeof (int);
+  sp += sizeof (fd);
   // get position
-  if (!convert_addr (sp, sizeof (unsigned), &pAdd))
+  unsigned position;
+  if (!copy_value (sp, &position, sizeof (position)))
     {
       syscall_exit_status (-1);
       return;
     }
-  position = *((unsigned *)pAdd);
+  sp += sizeof (position);
 
   if (fd < 2)
     {
@@ -477,7 +462,6 @@ static void syscall_seek (void *sp, struct intr_frame *f)
   struct file *fp = get_file (fd);
   if (fp == NULL)
   {
-    f->eax = -1;
     return;
   }
   lock_acquire (&filesys_lock);
@@ -487,15 +471,14 @@ static void syscall_seek (void *sp, struct intr_frame *f)
 
 static void syscall_tell (void *sp, struct intr_frame *f)
 {
-  void *pAdd;
-  int fd;
   // get fd
-  if (!convert_addr (sp, sizeof (int), &pAdd))
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  fd = *((int *)pAdd);
 
   if (fd < 2)
     {
@@ -515,15 +498,14 @@ static void syscall_tell (void *sp, struct intr_frame *f)
 
 static void syscall_close (void *sp, struct intr_frame *f)
 {
-  void *pAdd;
-  int fd;
   // get fd
-  if (!convert_addr (sp, sizeof (int), &pAdd))
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
     {
+      f->eax = -1;
       syscall_exit_status (-1);
       return;
     }
-  fd = *((int *)pAdd);
 
   if (fd < 2)
     {
@@ -544,64 +526,104 @@ static void syscall_close (void *sp, struct intr_frame *f)
   lock_release (&filesys_lock);
 }
 
-/* returns validty of vaddr. and set paddr */
-static bool convert_addr (const void *vaddr, size_t size, void **paddr)
+/* Reads a byte at user virtual address UADDR.
+   UADDR must be below PHYS_BASE.
+   Returns the byte value if successful, -1 if a segfault
+   occurred. */
+static int
+get_user (const uint8_t *uaddr)
+{
+  int result;
+  asm ("movl $1f, %0; movzbl %1, %0; 1:"
+       : "=&a" (result) : "m" (*uaddr));
+  return result;
+}
+
+/* Writes BYTE to user address UDST.
+   UDST must be below PHYS_BASE.
+   Returns true if successful, false if a segfault occurred. */
+static bool
+put_user (uint8_t *udst, uint8_t byte)
+{
+  int error_code;
+  asm ("movl $1f, %0; movb %b2, %1; 1:"
+       : "=&a" (error_code), "=m" (*udst) : "r" (byte));
+  return error_code != -1;
+}
+
+static bool
+is_valid_addr (void *vaddr, size_t size, bool writable)
 {
   if (!is_user_vaddr (vaddr + size - 1))
     {
-      *paddr = NULL;
-      return false;
-    }
-  void *unused_result = pagedir_get_page (thread_current ()->pagedir, vaddr + size - 1);
-  if (unused_result == NULL)
-    {
-      *paddr = NULL;
       return false;
     }
   if (!is_user_vaddr (vaddr))
     {
-      *paddr = NULL;
       return false;
     }
-  void *result = pagedir_get_page (thread_current ()->pagedir, vaddr);
-  if (result == NULL)
+  if (get_user (vaddr + size - 1) < 0)
     {
-      *paddr = NULL;
       return false;
     }
-  *paddr = result;
+  if (get_user (vaddr) < 0)
+    {
+      return false;
+    }
+  if (writable)
+    {
+      if (!put_user (vaddr + size - 1, (uint8_t)get_user (vaddr + size - 1)))
+        {
+          return false;
+        }
+      if (!put_user (vaddr, (uint8_t)get_user (vaddr)))
+        {
+          return false;
+        }
+    }
   return true;
 }
 
-/* returns validty of string. and set paddr */
-static bool convert_str (const char *vaddr, char **paddr)
+static bool is_valid_str (char *vaddr)
 {
-  if (!is_user_vaddr (vaddr))
-    {
-      *paddr = NULL;
-      return false;
-    }
-  char *result = pagedir_get_page (thread_current ()->pagedir, vaddr);
-  if (result == NULL)
-    {
-      *paddr = NULL;
-      return false;
-    }
-  const char* index = vaddr;
-  while (is_user_vaddr (index))
+  char* index = vaddr;
+  while (true)
   {
-    if (*index  == '\0')
+    if (!is_user_vaddr (index))
+      {
+        return false;
+      }
+    int read = get_user ((uint8_t *)index);
+    if (read < 0)
+      {
+        return false;
+      }
+    if ((char) read  == '\0')
     {
       break;
     }
     index++;
   }
-  if (!is_user_vaddr (index) || pagedir_get_page (thread_current ()->pagedir, index) == NULL)
+  return true;
+}
+static bool copy_value (const void *from, void *to, size_t size)
+{
+  size_t i = 0;
+  const char *f = from;
+  char *t = to;
+  for (i = 0; i < size; ++i)
   {
-      *paddr = NULL;
-      return false;
+    if (!is_user_vaddr (f + i))
+      {
+        return false;
+      }
+    int read = get_user ((uint8_t *)(f + i));
+    if (read < 0)
+      {
+        return false;
+      }
+    *(t + i) = (char) read;
   }
-  *paddr = result;
   return true;
 }
 
