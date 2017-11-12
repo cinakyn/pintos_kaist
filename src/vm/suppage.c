@@ -11,17 +11,15 @@ static bool suppage_less_func(const struct hash_elem *, const struct hash_elem *
 static void suppage_action_func (struct hash_elem *e, void *aux);
 
 void
-suppage_init (struct suppage *sp, uint32_t *pagedir)
+suppage_init (struct suppage *sp)
 {
   lock_init (&sp->sp_lock);
   hash_init (&sp->sp_map, suppage_hash_func, suppage_less_func, NULL);
-  sp->pagedir = pagedir;
 }
 
 void
 suppage_clear (struct suppage *sp)
 {
-  lock_acquire (&sp->sp_lock);
     {
       struct hash_iterator i;
       hash_first (&i, &sp->sp_map);
@@ -32,7 +30,7 @@ suppage_clear (struct suppage *sp)
           ASSERT (info->mt != MEM_TYPE_INVALID);
           if (info->mt == MEM_TYPE_FRAME)
             {
-              frame_return (sp->pagedir, info->page, info->frame);
+              frame_return (info);
             }
           else if (info->mt == MEM_TYPE_SWAP)
             {
@@ -41,68 +39,26 @@ suppage_clear (struct suppage *sp)
         }
     }
   hash_clear (&sp->sp_map, suppage_action_func);
-  lock_release (&sp->sp_lock);
 }
 
-void
-suppage_set_swap (struct suppage *sp, void *upage, bool writable, size_t index)
+struct suppage_info *
+suppage_create_info (struct suppage *sp, uint32_t *pagedir, void *upage, bool writable)
 {
-  lock_acquire (&sp->sp_lock);
-    {
-      struct suppage_info temp;
-      struct suppage_info *info;
-      temp.page = upage;
-      struct hash_elem *elem = hash_find (&sp->sp_map, &temp.helem);
-      if (elem == NULL)
-        {
-          info = malloc (sizeof (struct suppage_info));
-          info->page = upage;
-          ASSERT (hash_insert (&sp->sp_map, &info->helem) == NULL);
-        }
-      else
-        {
-          info = hash_entry (elem, struct suppage_info, helem);
-          ASSERT (info->page == upage);
-        }
-      info->mt = MEM_TYPE_SWAP;
-      info->index = index;
-      info->writable = writable;
-    }
-  lock_release (&sp->sp_lock);
-}
-
-void
-suppage_set_frame (struct suppage *sp, void *upage, bool writable, void *frame)
-{
-  lock_acquire (&sp->sp_lock);
-    {
-      struct suppage_info temp;
-      struct suppage_info *info;
-      temp.page = upage;
-      struct hash_elem *elem = hash_find (&sp->sp_map, &temp.helem);
-      if (elem == NULL)
-        {
-          info = malloc (sizeof (struct suppage_info));
-          info->page = upage;
-          ASSERT (hash_insert (&sp->sp_map, &info->helem) == NULL);
-        }
-      else
-        {
-          info = hash_entry (elem, struct suppage_info, helem);
-          ASSERT (info->page == upage);
-        }
-      info->mt = MEM_TYPE_FRAME;
-      info->frame = frame;
-      info->writable = writable;
-    }
-  lock_release (&sp->sp_lock);
+  ASSERT (upage != NULL);
+  struct suppage_info *info = malloc (sizeof (struct suppage_info));
+  info->mt = MEM_TYPE_INVALID;
+  info->index = 0;
+  info->pagedir = pagedir;
+  info->page = upage;
+  info->writable = writable;
+  ASSERT (hash_insert (&sp->sp_map, &info->helem) == NULL);
+  return info;
 }
 
 struct suppage_info *
 suppage_get_info (struct suppage *sp, void *upage)
 {
   struct suppage_info *info;
-  lock_acquire (&sp->sp_lock);
     {
       struct suppage_info temp;
       temp.page = upage;
@@ -116,7 +72,6 @@ suppage_get_info (struct suppage *sp, void *upage)
           info = hash_entry (elem, struct suppage_info, helem);
         }
     }
-  lock_release (&sp->sp_lock);
   return info;
 }
 
@@ -135,8 +90,8 @@ suppage_less_func (const struct hash_elem *a, const struct hash_elem *b, void *a
   return a_entry->page < b_entry->page;
 }
 
-static void 
-suppage_action_func (struct hash_elem *e, void *aux)
+static void
+suppage_action_func (struct hash_elem *e, void *aux UNUSED)
 {
   struct suppage_info *info = hash_entry(e, struct suppage_info, helem);
   free (info);

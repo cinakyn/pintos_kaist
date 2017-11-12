@@ -93,11 +93,9 @@ kill (struct intr_frame *f)
     case SEL_UCSEG:
       /* User's code segment, so it's a user exception, as we
          expected.  Kill the user process.  */
-      /*
       printf ("%s: dying due to interrupt %#04x (%s).\n",
               thread_name (), f->vec_no, intr_name (f->vec_no));
       intr_dump_frame (f);
-      */
       syscall_exit_status (-1);
 
     case SEL_KCSEG:
@@ -166,23 +164,36 @@ page_fault (struct intr_frame *f)
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
+
   */
+  lock_acquire (&frame_magic_lock);
+  bool success = true;
   uint32_t *pd = thread_current ()->pagedir;
   struct suppage *sp = &thread_current ()->sp;
   void *upage = (void *)(((uintptr_t)fault_addr & (~PGMASK)));
+
   struct suppage_info *sp_info = suppage_get_info (sp, upage);
   if (sp_info == NULL)
   {
     f->cs = SEL_UCSEG;
-    kill (f);
+    success = false;
   }
-  if (write && !sp_info->writable)
+  else if (write && !sp_info->writable)
   {
     f->cs = SEL_UCSEG;
+    success = false;
+  }
+  else
+  {
+    ASSERT (sp_info->mt != MEM_TYPE_FRAME);
+    ASSERT (sp_info->mt != MEM_TYPE_INVALID);
+    void *frame = frame_get (sp_info);
+    swap_in (sp_info->index, frame);
+  }
+  lock_release (&frame_magic_lock);
+  if (!success)
+  {
     kill (f);
   }
-  ASSERT (sp_info->mt == MEM_TYPE_SWAP);
-  void *frame = frame_get (pd, upage, sp, sp_info->writable);
-  swap_in (sp_info->index, frame);
 }
 

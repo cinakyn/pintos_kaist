@@ -7,7 +7,6 @@
 
 struct suppage
 {
-  uint32_t *pagedir;
   struct lock sp_lock;
   struct hash sp_map;
 };
@@ -22,18 +21,17 @@ enum mem_type
 struct suppage_info
 {
   enum mem_type mt;
+  uint32_t *pagedir;
   void *page;
-  void *frame;
   size_t index;
   bool writable;
   struct hash_elem helem;
 };
 
 
-void suppage_init (struct suppage *sp, uint32_t *pagedir);
+void suppage_init (struct suppage *sp);
 void suppage_clear (struct suppage *sp);
-void suppage_set_swap (struct suppage *sp, void *upage, bool writable, size_t index);
-void suppage_set_frame (struct suppage *sp, void *upage, bool writable, void *frame);
+struct suppage_info *suppage_create_info (struct suppage *sp, uint32_t *pagedir, void *upage, bool writable);
 struct suppage_info *suppage_get_info (struct suppage *sp, void *upage);
 
 #endif /* vm/suppage.h */

@@ -300,8 +300,10 @@ process_exit (void)
          that's been freed (and cleared). */
       curr->pagedir = NULL;
       pagedir_activate (NULL);
+      lock_acquire (&frame_magic_lock);
       suppage_clear (&curr->sp);
       pagedir_destroy (pd);
+      lock_release (&frame_magic_lock);
     }
 
   /* release waiting parent process */
@@ -467,7 +469,9 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
-  suppage_init (&t->sp, t->pagedir);
+  lock_acquire (&frame_magic_lock);
+  suppage_init (&t->sp);
+  lock_release (&frame_magic_lock);
 
   /* Open executable file. */
   char file_name[1024];
@@ -665,11 +669,14 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      uint8_t *kpage = frame_get (
+      lock_acquire (&frame_magic_lock);
+      struct suppage_info *owner = suppage_create_info (
+          &thread_current ()->sp,
           thread_current ()->pagedir,
           upage,
-          &thread_current ()->sp,
           writable);
+      uint8_t *kpage = frame_get (owner);
+      lock_release (&frame_magic_lock);
       if (kpage == NULL)
         return false;
 
@@ -680,15 +687,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
           return false;
         }
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-      /* turn into readonly */
-      struct suppage_info *sp_info 
-        = suppage_get_info (&thread_current ()->sp, upage);
-      if (sp_info->writable)
-        {
-          sp_info->writable = false;
-          pagedir_set_writable (&thread_current ()->pagedir, upage, false);
-        }
 
       /* Advance. */
       read_bytes -= page_read_bytes;
@@ -706,11 +704,14 @@ setup_stack (void **esp, const char *cmd_line)
   uint8_t *kpage;
   size_t cpy_dst_size;
 
-  kpage = frame_get (
+  lock_acquire (&frame_magic_lock);
+  struct suppage_info *owner = suppage_create_info (
+      &thread_current ()->sp,
       thread_current ()->pagedir,
       ((uint8_t *) PHYS_BASE) - PGSIZE,
-      &thread_current ()->sp,
       true);
+  kpage = frame_get (owner);
+  lock_release (&frame_magic_lock);
 
   if (kpage != NULL) 
     {
