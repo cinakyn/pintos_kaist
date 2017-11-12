@@ -99,6 +99,7 @@ struct thread
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
     struct suppage sp;
+    void *esp_backup;
 #endif
 
     /* Owned by thread.c. */

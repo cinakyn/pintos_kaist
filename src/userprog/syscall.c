@@ -52,6 +52,7 @@ syscall_handler (struct intr_frame *f)
       return;
     }
   sp += sizeof (int);
+  thread_current ()->esp_backup = f->esp;
   switch (call_number)
     {
       case SYS_HALT:
@@ -97,6 +98,7 @@ syscall_handler (struct intr_frame *f)
         printf ("wtf\n");
         syscall_exit_status (-1);
     }
+    thread_current ()->esp_backup = NULL;
 }
 
 static void syscall_halt (void *sp UNUSED, struct intr_frame *f UNUSED)

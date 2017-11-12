@@ -11,6 +11,9 @@
 #include "threads/pte.h"
 #include "threads/pte.h"
 
+#define MAX_STACK_SIZE (1 << 23)
+#define PRINT_FAULT_INFO false
+
 /* Number of page faults processed. */
 static long long page_fault_cnt;
 
@@ -93,10 +96,13 @@ kill (struct intr_frame *f)
     case SEL_UCSEG:
       /* User's code segment, so it's a user exception, as we
          expected.  Kill the user process.  */
-      printf ("%s: dying due to interrupt %#04x (%s).\n",
-              thread_name (), f->vec_no, intr_name (f->vec_no));
-      intr_dump_frame (f);
-      syscall_exit_status (-1);
+      if (PRINT_FAULT_INFO)
+        {
+          printf ("%s: dying due to interrupt %#04x (%s).\n",
+                  thread_name (), f->vec_no, intr_name (f->vec_no));
+          intr_dump_frame (f);
+        }
+        syscall_exit_status (-1);
 
     case SEL_KCSEG:
       /* Kernel's code segment, which indicates a kernel bug.
@@ -158,42 +164,69 @@ page_fault (struct intr_frame *f)
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
-  /*
-  printf ("Page fault at %p: %s error %s page in %s context.\n",
-          fault_addr,
-          not_present ? "not present" : "rights violation",
-          write ? "writing" : "reading",
-          user ? "user" : "kernel");
+  if (PRINT_FAULT_INFO)
+    {
+      printf ("Page fault at %p: %s error %s page in %s context.\n",
+              fault_addr,
+              not_present ? "not present" : "rights violation",
+              write ? "writing" : "reading",
+              user ? "user" : "kernel");
+    }
 
-  */
   lock_acquire (&frame_magic_lock);
   bool success = true;
   uint32_t *pd = thread_current ()->pagedir;
   struct suppage *sp = &thread_current ()->sp;
-  void *upage = (void *)(((uintptr_t)fault_addr & (~PGMASK)));
-
+  void *upage = pg_round_down (fault_addr);
+  void *esp = f->esp;
+  if (!user && thread_current ()->esp_backup != NULL)
+    {
+      esp = thread_current ()->esp_backup;
+    }
   struct suppage_info *sp_info = suppage_get_info (sp, upage);
-  if (sp_info == NULL)
-  {
-    f->cs = SEL_UCSEG;
-    success = false;
-  }
+  if (!is_user_vaddr (fault_addr))
+    {
+      f->cs = SEL_UCSEG;
+      success = false;
+    }
+  else if (sp_info == NULL)
+    {
+      // check stack growth
+      if (PRINT_FAULT_INFO)
+        {
+          printf ("stack growth info %p // %p (%p)\n", fault_addr, esp, f->esp);
+        }
+      if (PHYS_BASE - upage <= MAX_STACK_SIZE && (uint32_t *)fault_addr >= (esp - (1 << 5)))
+        {
+          struct suppage_info *new_info = suppage_create_info (
+              sp,
+              pd,
+              upage,
+              true);
+          frame_get (new_info);
+        }
+    else
+      {
+        f->cs = SEL_UCSEG;
+        success = false;
+      }
+    }
   else if (write && !sp_info->writable)
-  {
-    f->cs = SEL_UCSEG;
-    success = false;
-  }
+    {
+      f->cs = SEL_UCSEG;
+      success = false;
+    }
   else
-  {
-    ASSERT (sp_info->mt != MEM_TYPE_FRAME);
-    ASSERT (sp_info->mt != MEM_TYPE_INVALID);
-    void *frame = frame_get (sp_info);
-    swap_in (sp_info->index, frame);
-  }
+    {
+      ASSERT (sp_info->mt != MEM_TYPE_FRAME);
+      ASSERT (sp_info->mt != MEM_TYPE_INVALID);
+      void *frame = frame_get (sp_info);
+      swap_in (sp_info->index, frame);
+    }
   lock_release (&frame_magic_lock);
   if (!success)
-  {
-    kill (f);
-  }
+    {
+      kill (f);
+    }
 }
 
