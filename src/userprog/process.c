@@ -19,6 +19,8 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "vm/frame.h"
+#include "vm/mmap-file.h"
+#include "userprog/syscall.h"
 
 static thread_func start_process NO_RETURN;
 static pid_t get_next_pid (void);
@@ -137,9 +139,9 @@ process_info_init (struct process_info *info, tid_t tid)
   info->pid = get_next_pid ();
   info->name = NULL;
   info->terminated = false;
-  info->exec_file = NULL;
   memset (info->children, 0, sizeof (info->children));
   memset (info->owned_files, 0, sizeof (info->owned_files));
+  memset (info->owned_mmap, 0, sizeof (info->owned_mmap));
   lock_init (&info->wait_lock);
   lock_init (&info->info_lock);
   cond_init (&info->wait_cond);
@@ -267,10 +269,6 @@ process_exit (void)
   lock_acquire (&info->info_lock);
   {
     info->terminated = true;
-    if (info->exec_file != NULL)
-      {
-        file_close (info->exec_file);
-      }
   }
   lock_release (&info->info_lock);
   /* wait children which isn't terminated. */
@@ -285,6 +283,22 @@ process_exit (void)
           process_wait (child_info->inner_thread);
         }
     }
+
+  /* ummap */
+  lock_acquire (&frame_magic_lock);
+  lock_acquire (&info->info_lock);
+  for (i = 0;
+       i < sizeof (info->owned_mmap) / sizeof (struct mmap_info *);
+       ++i)
+    {
+      if (info->owned_mmap[i] != NULL)
+        {
+          mmap_remove_info (info->owned_mmap, i);
+        }
+    }
+  lock_release (&info->info_lock);
+  lock_release (&frame_magic_lock);
+
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -485,16 +499,21 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
       ASSERT (index < 1023);
     }
   file_name[index] = '\0';
+  lock_acquire (&filesys_lock);
   file = filesys_open (file_name);
+  lock_release (&filesys_lock);
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
 
+  lock_acquire (&filesys_lock);
   file_deny_write (file);
+  int read_result = file_read (file, &ehdr, sizeof ehdr);
+  lock_release (&filesys_lock);
   /* Read and verify executable header. */
-  if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
+  if (read_result != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
       || ehdr.e_type != 2
       || ehdr.e_machine != 3
@@ -512,11 +531,19 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
     {
       struct Elf32_Phdr phdr;
 
-      if (file_ofs < 0 || file_ofs > file_length (file))
+      lock_acquire (&filesys_lock);
+      bool fail = file_ofs < 0 || file_ofs > file_length (file);
+      lock_release (&filesys_lock);
+      if (fail)
         goto done;
+      lock_acquire (&filesys_lock);
       file_seek (file, file_ofs);
+      lock_release (&filesys_lock);
 
-      if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
+      lock_acquire (&filesys_lock);
+      fail = file_read (file, &phdr, sizeof phdr) != sizeof phdr;
+      lock_release (&filesys_lock);
+      if (fail)
         goto done;
       file_ofs += sizeof phdr;
       switch (phdr.p_type) 
@@ -555,9 +582,7 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
                   read_bytes = 0;
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
-              if (!load_segment (file, file_page, (void *) mem_page,
-                                 read_bytes, zero_bytes, writable))
-                goto done;
+              load_segment (file, file_page, (void *) mem_page, read_bytes, zero_bytes, writable);
             }
           else
             goto done;
@@ -580,13 +605,6 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
     {
       file_close (file);
     }
-  else
-    {
-      struct process_info *info = process_get_info (thread_current ()->tid);
-      lock_acquire (&info->info_lock);
-      info->exec_file = file;
-      lock_release (&info->info_lock);
-    }
   return success;
 }
 
@@ -602,7 +620,10 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
     return false; 
 
   /* p_offset must point within FILE. */
-  if (phdr->p_offset > (Elf32_Off) file_length (file)) 
+  lock_acquire (&filesys_lock);
+  bool fail = phdr->p_offset > (Elf32_Off) file_length (file);
+  lock_release (&filesys_lock);
+  if (fail) 
     return false;
 
   /* p_memsz must be at least as big as p_filesz. */
@@ -659,16 +680,48 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
+  struct process_info *info = process_get_info (thread_current ()->tid);
+  lock_acquire (&frame_magic_lock);
+  lock_acquire (&info->info_lock);
+  ASSERT (mmap_add_info (info->owned_mmap, 256, file, (uintptr_t)upage, ofs, read_bytes, read_bytes + zero_bytes, true, writable)
+          != MAP_FAILED);
+  lock_release (&info->info_lock);
+  lock_release (&frame_magic_lock);
+
+  /*
+  char buffer[1024];
   file_seek (file, ofs);
-  while (read_bytes > 0 || zero_bytes > 0) 
+  while (read_bytes > 0 || zero_bytes > 0)
     {
-      /* Do calculate how to fill this page.
-         We will read PAGE_READ_BYTES bytes from FILE
-         and zero the final PAGE_ZERO_BYTES bytes. */
+      size_t page_read_bytes = read_bytes < 1024 ? read_bytes : 1024;
+      size_t page_zero_bytes = 1024 - page_read_bytes;
+
+      if (file_read (file, buffer, page_read_bytes) != (int) page_read_bytes)
+        {
+          return false;
+        }
+      memset (buffer + page_read_bytes, 0, page_zero_bytes);
+
+      bool pass = memcmp (buffer, upage, 1024) == 0;
+      if (!pass)
+      {
+        printf ("compare fail %p\n", upage);
+      }
+      ASSERT (pass);
+      read_bytes -= page_read_bytes;
+      zero_bytes -= page_zero_bytes;
+      upage += 1024;
+    }
+  */
+  return true;
+
+  /*
+  file_seek (file, ofs);
+  while (read_bytes > 0 || zero_bytes > 0)
+    {
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-      /* Get a page of memory. */
       lock_acquire (&frame_magic_lock);
       struct suppage_info *owner = suppage_create_info (
           &thread_current ()->sp,
@@ -680,7 +733,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       if (kpage == NULL)
         return false;
 
-      /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
           palloc_free_page (kpage);
@@ -688,12 +740,12 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
         }
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
-      /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
     }
   return true;
+  */
 }
 
 /* Create a minimal stack by mapping a zeroed page at the top of

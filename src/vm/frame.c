@@ -1,12 +1,14 @@
 #include "vm/frame.h"
 #include "vm/suppage.h"
 #include "vm/swap.h"
+#include "vm/mmap-file.h"
 #include "lib/kernel/list.h"
 #include "lib/kernel/hash.h"
 #include "userprog/pagedir.h"
 #include "threads/palloc.h"
 #include "threads/synch.h"
 #include "threads/malloc.h"
+#include "threads/thread.h"
 #include <stdio.h>
 
 struct frame_info
@@ -43,24 +45,35 @@ frame_get (struct suppage_info *owner)
       if (frame == NULL)
         {
           f_info = take_away_frame ();
-          f_info->owner = owner;
           frame = f_info->frame;
         }
       else
         {
           /* make frame info */
           f_info = malloc (sizeof (struct frame_info));
-          f_info->owner = owner;
           f_info->frame = frame;
         }
+      f_info->owner = owner;
       /* insert into queue tail */
       list_push_back (&frame_info_queue, &f_info->elem);
       hash_insert (&frame_info_hash, &f_info->helem);
-
       owner->mt = MEM_TYPE_FRAME;
       pagedir_set_page (owner->pagedir, owner->page, frame, owner->writable);
     }
   return frame;
+}
+
+void *
+frame_with_owner (struct suppage_info *owner)
+{
+    /* find frame info */
+    ASSERT (owner != NULL);
+    struct frame_info temp;
+    temp.owner = owner;
+    struct hash_elem *elem = hash_find (&frame_info_hash, &temp.helem);
+    ASSERT (elem != NULL);
+    struct frame_info *f_info = hash_entry (elem, struct frame_info, helem);
+    return f_info->frame;
 }
 
 void
@@ -122,9 +135,25 @@ take_away_frame (void)
   list_remove (&selected->elem);
   hash_delete (&frame_info_hash, &selected->helem);
   pagedir_clear_page (selected->owner->pagedir, selected->owner->page);
-  size_t index = swap_out (selected->frame);
-  selected->owner->mt = MEM_TYPE_SWAP;
-  selected->owner->index = index;
+
+  /* first check mmap */
+  struct mmap_info *map_info = selected->owner->mmap_info;
+  if (map_info != NULL)
+    {
+      if (pagedir_is_dirty (selected->owner->pagedir, selected->owner->page))
+      {
+        size_t index = mmap_swap_out (selected->frame, selected->owner->page, map_info);
+        selected->owner->index = index;
+      }
+      selected->owner->mt = MEM_TYPE_MMAP_FILE;
+    }
+  else
+    {
+      size_t index = swap_out (selected->frame);
+      selected->owner->index = index;
+      selected->owner->mt = MEM_TYPE_SWAP;
+    }
+  ASSERT (selected->owner->mt != MEM_TYPE_FRAME);
   selected->owner = NULL;
   return selected;
 }

@@ -27,7 +27,7 @@ suppage_clear (struct suppage *sp)
         {
           struct suppage_info *info
             = hash_entry (hash_cur (&i), struct suppage_info, helem);
-          ASSERT (info->mt != MEM_TYPE_INVALID);
+          ASSERT (info->mt == MEM_TYPE_FRAME || info->mt == MEM_TYPE_SWAP);
           if (info->mt == MEM_TYPE_FRAME)
             {
               frame_return (info);
@@ -41,6 +41,18 @@ suppage_clear (struct suppage *sp)
   hash_clear (&sp->sp_map, suppage_action_func);
 }
 
+void
+suppage_remove_info (struct suppage *sp, struct suppage_info *info)
+{
+  ASSERT (info->mmap_info != NULL);
+  if (info->mt == MEM_TYPE_FRAME)
+  {
+    frame_return (info);
+  }
+  hash_delete (&sp->sp_map, &info->helem);
+  free (info);
+}
+
 struct suppage_info *
 suppage_create_info (struct suppage *sp, uint32_t *pagedir, void *upage, bool writable)
 {
@@ -51,8 +63,16 @@ suppage_create_info (struct suppage *sp, uint32_t *pagedir, void *upage, bool wr
   info->pagedir = pagedir;
   info->page = upage;
   info->writable = writable;
+  info->mmap_info = NULL;
   ASSERT (hash_insert (&sp->sp_map, &info->helem) == NULL);
   return info;
+}
+
+void
+suppage_set_mmap_info (struct suppage_info *sp, struct mmap_info *mmap_info, size_t index)
+{
+  sp->mmap_info = mmap_info;
+  sp->index = index;
 }
 
 struct suppage_info *

@@ -11,6 +11,8 @@
 #include "threads/vaddr.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "vm/mmap-file.h"
+#include "vm/frame.h"
 
 static void syscall_handler (struct intr_frame *);
 static void syscall_halt (void *sp, struct intr_frame *);
@@ -26,13 +28,15 @@ static void syscall_write (void *sp, struct intr_frame *);
 static void syscall_seek (void *sp, struct intr_frame *);
 static void syscall_tell (void *sp, struct intr_frame *);
 static void syscall_close (void *sp, struct intr_frame *);
+static void syscall_close (void *sp, struct intr_frame *);
+static void syscall_mmap (void *sp, struct intr_frame *);
+static void syscall_munmap (void *sp, struct intr_frame *);
 static int get_user (const uint8_t *uaddr);
 static bool put_user (uint8_t *udst, uint8_t byte);
 static bool is_valid_addr (void *vaddr, size_t size, bool writable);
 static bool is_valid_str (char *vaddr);
 static bool copy_value (const void *from, void *to, size_t size);
 static struct file *get_file (int fd);
-static struct lock filesys_lock;
 
 void
 syscall_init (void) 
@@ -94,6 +98,12 @@ syscall_handler (struct intr_frame *f)
       case SYS_CLOSE:
         syscall_close (sp, f);
         break;
+      case SYS_MMAP:
+        syscall_mmap (sp, f);
+        break;
+      case SYS_MUNMAP:
+        syscall_munmap (sp, f);
+        break;
       default:
         printf ("wtf\n");
         syscall_exit_status (-1);
@@ -119,8 +129,8 @@ static void syscall_exit (void *sp, struct intr_frame *f UNUSED)
 void syscall_exit_status (int status)
 {
   struct process_info *info = process_get_info (thread_current ()->tid);
-  lock_acquire (&info->info_lock);
   lock_acquire (&filesys_lock);
+  lock_acquire (&info->info_lock);
   info->status = status;
   size_t i = 0;
   for (i = 0;
@@ -135,8 +145,8 @@ void syscall_exit_status (int status)
         }
     }
   printf ("%s: exit(%d)\n", info->name, status); 
-  lock_release (&filesys_lock);
   lock_release (&info->info_lock);
+  lock_release (&filesys_lock);
   thread_exit ();
 }
 
@@ -155,7 +165,6 @@ static void syscall_exec (void *sp, struct intr_frame *f)
         syscall_exit_status (-1);
         return;
     }
-  lock_acquire (&filesys_lock);
   tid_t tid = process_execute (cmd_line);
   if (tid >= 0)
     {
@@ -165,7 +174,6 @@ static void syscall_exec (void *sp, struct intr_frame *f)
     {
       f->eax = -1;
     }
-  lock_release (&filesys_lock);
 }
 
 static void syscall_wait (void *sp, struct intr_frame *f)
@@ -526,6 +534,82 @@ static void syscall_close (void *sp, struct intr_frame *f)
   lock_acquire (&filesys_lock);
   file_close (fp);
   lock_release (&filesys_lock);
+}
+
+static void
+syscall_mmap (void *sp, struct intr_frame *f)
+{
+  // get fd
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
+    {
+      f->eax = -1;
+      syscall_exit_status (-1);
+      return;
+    }
+
+  if (fd < 2)
+    {
+      f->eax = 0;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (get_file (fd) == NULL)
+    {
+      f->eax = 0;
+      syscall_exit_status (-1);
+      return;
+    }
+  sp += sizeof (fd);
+  //get buffer
+  void *addr;
+  if (!copy_value (sp, &addr, sizeof (addr)))
+    {
+      f->eax = -1;
+      syscall_exit_status (-1);
+      return;
+    }
+  if ((uintptr_t) addr == 0)
+    {
+      f->eax = MAP_FAILED;
+      return;
+    }
+  if (pg_ofs (addr) != 0)
+    {
+      f->eax = MAP_FAILED;
+      return;
+    }
+  struct process_info *proc_info = process_get_info (thread_current ()->tid);
+  struct file *mapped_file = get_file (fd);
+  lock_acquire (&filesys_lock);
+  size_t file_size = file_length (mapped_file);
+  lock_release (&filesys_lock);
+
+  lock_acquire (&frame_magic_lock);
+  lock_acquire (&proc_info->info_lock);
+  mapid_t id = mmap_add_info (proc_info->owned_mmap, 256, mapped_file, (uintptr_t)addr, 0, file_size, file_size, false, true);
+  lock_release (&proc_info->info_lock);
+  lock_release (&frame_magic_lock);
+  f->eax = id;
+}
+
+static void
+syscall_munmap (void *sp, struct intr_frame *f)
+{
+  // get mapid
+  mapid_t id;
+  if (!copy_value (sp, &id, sizeof (id)))
+    {
+      f->eax = -1;
+      syscall_exit_status (-1);
+      return;
+    }
+  struct process_info *proc_info = process_get_info (thread_current ()->tid);
+  lock_acquire (&frame_magic_lock);
+  lock_acquire (&proc_info->info_lock);
+  mmap_remove_info (proc_info->owned_mmap, id);
+  lock_release (&proc_info->info_lock);
+  lock_release (&frame_magic_lock);
 }
 
 /* Reads a byte at user virtual address UADDR.

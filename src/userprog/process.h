@@ -1,8 +1,8 @@
 #ifndef USERPROG_PROCESS_H
 #define USERPROG_PROCESS_H
 
-#include "lib/user/syscall.h"
 #include "threads/thread.h"
+#include "vm/mmap-file.h"
 
 struct process_info 
 {
@@ -13,7 +13,7 @@ struct process_info
   struct process_info *parent;
   struct process_info *children[256];
   struct file *owned_files[256];
-  struct file *exec_file;
+  struct mmap_info *owned_mmap[256];
   tid_t inner_thread;
   struct condition wait_cond;
   struct lock wait_lock;

@@ -1,6 +1,7 @@
 #include "userprog/exception.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include "userprog/process.h"
 #include "userprog/syscall.h"
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
@@ -9,10 +10,10 @@
 #include "vm/frame.h"
 #include "vm/suppage.h"
 #include "threads/pte.h"
-#include "threads/pte.h"
+#include "lib/debug.h"
 
 #define MAX_STACK_SIZE (1 << 23)
-#define PRINT_FAULT_INFO false
+#define PRINT_FAULT_INFO true
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -166,14 +167,17 @@ page_fault (struct intr_frame *f)
      which fault_addr refers. */
   if (PRINT_FAULT_INFO)
     {
-      printf ("Page fault at %p: %s error %s page in %s context.\n",
+      printf ("(%p)Page fault at %p(%p): %s error %s page in %s context.\n",
+              thread_current (),
               fault_addr,
+              pg_round_down (fault_addr),
               not_present ? "not present" : "rights violation",
               write ? "writing" : "reading",
               user ? "user" : "kernel");
     }
 
   lock_acquire (&frame_magic_lock);
+  printf ("fault start %p\n", thread_current ());
   bool success = true;
   uint32_t *pd = thread_current ()->pagedir;
   struct suppage *sp = &thread_current ()->sp;
@@ -184,7 +188,7 @@ page_fault (struct intr_frame *f)
       esp = thread_current ()->esp_backup;
     }
   struct suppage_info *sp_info = suppage_get_info (sp, upage);
-  if (!is_user_vaddr (fault_addr))
+  if (user && !is_user_vaddr (fault_addr))
     {
       f->cs = SEL_UCSEG;
       success = false;
@@ -194,10 +198,12 @@ page_fault (struct intr_frame *f)
       // check stack growth
       if (PRINT_FAULT_INFO)
         {
-          printf ("stack growth info %p // %p (%p)\n", fault_addr, esp, f->esp);
+          printf ("fault info %p // %p (%p)\n", fault_addr, esp, upage);
         }
-      if (PHYS_BASE - upage <= MAX_STACK_SIZE && (uint32_t *)fault_addr >= (esp - (1 << 5)))
+      if ((uint32_t)(PHYS_BASE - (uintptr_t)upage) <= MAX_STACK_SIZE
+          && ((uintptr_t)fault_addr >= ((uintptr_t)esp - (1 << 5))))
         {
+          printf ("2\n");
           struct suppage_info *new_info = suppage_create_info (
               sp,
               pd,
@@ -205,11 +211,39 @@ page_fault (struct intr_frame *f)
               true);
           frame_get (new_info);
         }
-    else
-      {
-        f->cs = SEL_UCSEG;
-        success = false;
-      }
+      else
+        {
+          struct process_info *pinfo = process_get_info (thread_current ()->tid);
+          lock_acquire (&pinfo->info_lock);
+          struct mmap_info *map_info
+              = mmap_get_info (pinfo->owned_mmap, 256, fault_addr);
+          if (map_info != NULL)
+            {
+              printf ("4\n");
+              struct suppage_info *new_info = suppage_create_info (
+                  sp,
+                  pd,
+                  upage,
+                  map_info->writable);
+              printf ("4-1\n");
+              void *frame = frame_get (new_info);
+              printf ("4-2\n");
+              size_t index = mmap_swap_in (frame, upage, map_info);
+              printf ("4-3\n");
+              if (!map_info->read_one_time)
+              {
+                suppage_set_mmap_info (new_info, map_info, index);
+              }
+              printf ("4-4\n");
+            }
+          else
+            {
+              printf ("5\n");
+              f->cs = SEL_UCSEG;
+              success = false;
+            }
+          lock_release (&pinfo->info_lock);
+        }
     }
   else if (write && !sp_info->writable)
     {
@@ -218,15 +252,26 @@ page_fault (struct intr_frame *f)
     }
   else
     {
+      printf ("6\n");
       ASSERT (sp_info->mt != MEM_TYPE_FRAME);
       ASSERT (sp_info->mt != MEM_TYPE_INVALID);
       void *frame = frame_get (sp_info);
-      swap_in (sp_info->index, frame);
+      if (sp_info->mmap_info == NULL)
+        {
+          printf ("7\n");
+          swap_in (sp_info->index, frame);
+        }
+      else
+        {
+          printf ("8\n");
+          size_t index = mmap_swap_in (frame, upage, sp_info->mmap_info);
+          ASSERT (index == sp_info->index);
+        }
     }
+  printf ("fault end %p\n", thread_current ());
   lock_release (&frame_magic_lock);
   if (!success)
     {
       kill (f);
     }
 }
-
