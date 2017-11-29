@@ -285,8 +285,11 @@ process_exit (void)
   /* modidfy process info */
   lock_acquire (&filesys_lock);
   {
-    file_allow_write (info->exec_file);
-    file_close (info->exec_file);
+    if (info->exec_file != NULL)
+      {
+        file_allow_write (info->exec_file);
+        file_close (info->exec_file);
+      }
   }
   lock_release (&filesys_lock);
   lock_acquire (&info->info_lock);
@@ -613,7 +616,10 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
   if (!success)
     {
       lock_acquire (&filesys_lock);
-      file_close (file);
+      if (file != NULL)
+      {
+        file_close (file);
+      }
       lock_release (&filesys_lock);
     }
   else
