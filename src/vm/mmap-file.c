@@ -42,9 +42,7 @@ mmap_add_info (
     bool read_one_time,
     bool writable)
 {
-  lock_acquire (&filesys_lock);
   struct file *copied_file = file_reopen (mapped_file);
-  lock_release (&filesys_lock);
   size_t i;
   uintptr_t current = mapped_addr;
   struct suppage *sp = &thread_current ()->sp;
@@ -118,9 +116,7 @@ mmap_remove_info (struct mmap_info** info_list, mapid_t id)
           current += PGSIZE;
         }
     }
-  lock_acquire (&filesys_lock);
   file_close (info->mapped_file);
-  lock_release (&filesys_lock);
   free (info);
   info_list[id] = NULL;
 }
@@ -143,9 +139,7 @@ mmap_swap_in (void *frame, void *vaddr, struct mmap_info *minfo)
     }
   if (content_size > 0)
     {
-      lock_acquire (&filesys_lock);
       file_read_at (minfo->mapped_file, frame, content_size, (uintptr_t)vaddr - minfo->mapped_addr + minfo->ofs);
-      lock_release (&filesys_lock);
     }
   if (content_size < PGSIZE)
     {
@@ -176,9 +170,7 @@ mmap_swap_out (void *frame, void *vaddr, struct mmap_info *minfo)
     }
   if (content_size > 0)
   {
-    lock_acquire (&filesys_lock);
     file_write_at (minfo->mapped_file, frame, content_size, (uintptr_t)vaddr - minfo->mapped_addr + minfo->ofs);
-    lock_release (&filesys_lock);
   }
   return mmap_calc_index (minfo->mapped_addr, (uintptr_t)vaddr);
 }

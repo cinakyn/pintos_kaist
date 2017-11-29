@@ -129,7 +129,6 @@ static void syscall_exit (void *sp, struct intr_frame *f UNUSED)
 void syscall_exit_status (int status)
 {
   struct process_info *info = process_get_info (thread_current ()->tid);
-  lock_acquire (&filesys_lock);
   lock_acquire (&info->info_lock);
   info->status = status;
   size_t i = 0;
@@ -146,7 +145,6 @@ void syscall_exit_status (int status)
     }
   printf ("%s: exit(%d)\n", info->name, status); 
   lock_release (&info->info_lock);
-  lock_release (&filesys_lock);
   thread_exit ();
 }
 
@@ -316,9 +314,7 @@ static void syscall_filesize (void *sp, struct intr_frame *f)
     f->eax = -1;
     return;
   }
-  lock_acquire (&filesys_lock);
   f->eax = file_length (fp);
-  lock_release (&filesys_lock);
 }
 
 static void syscall_read (void *sp, struct intr_frame *f)
@@ -383,9 +379,7 @@ static void syscall_read (void *sp, struct intr_frame *f)
     f->eax = -1;
     return;
   }
-  lock_acquire (&filesys_lock);
   f->eax = file_read (fp, buffer, size);
-  lock_release (&filesys_lock);
 }
 
 static void syscall_write (void *sp, struct intr_frame *f)
@@ -441,9 +435,7 @@ static void syscall_write (void *sp, struct intr_frame *f)
     f->eax = -1;
     return;
   }
-  lock_acquire (&filesys_lock);
   f->eax = file_write (fp, buffer, size);
-  lock_release (&filesys_lock);
 }
 
 static void syscall_seek (void *sp, struct intr_frame *f UNUSED)
@@ -474,9 +466,7 @@ static void syscall_seek (void *sp, struct intr_frame *f UNUSED)
   {
     return;
   }
-  lock_acquire (&filesys_lock);
   file_seek (fp, position);
-  lock_release (&filesys_lock);
 }
 
 static void syscall_tell (void *sp, struct intr_frame *f)
@@ -501,9 +491,7 @@ static void syscall_tell (void *sp, struct intr_frame *f)
     f->eax = 0;
     return;
   }
-  lock_acquire (&filesys_lock);
   f->eax = file_tell (fp);
-  lock_release (&filesys_lock);
 }
 
 static void syscall_close (void *sp, struct intr_frame *f)
@@ -531,9 +519,7 @@ static void syscall_close (void *sp, struct intr_frame *f)
   lock_acquire (&proc_info->info_lock);
   proc_info->owned_files[fd - 2] = NULL;
   lock_release (&proc_info->info_lock);
-  lock_acquire (&filesys_lock);
   file_close (fp);
-  lock_release (&filesys_lock);
 }
 
 static void
@@ -581,9 +567,7 @@ syscall_mmap (void *sp, struct intr_frame *f)
     }
   struct process_info *proc_info = process_get_info (thread_current ()->tid);
   struct file *mapped_file = get_file (fd);
-  lock_acquire (&filesys_lock);
   size_t file_size = file_length (mapped_file);
-  lock_release (&filesys_lock);
 
   lock_acquire (&frame_magic_lock);
   lock_acquire (&proc_info->info_lock);

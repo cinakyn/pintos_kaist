@@ -283,15 +283,11 @@ process_exit (void)
   lock_release (&frame_magic_lock);
 
   /* modidfy process info */
-  lock_acquire (&filesys_lock);
+if (info->exec_file != NULL)
   {
-    if (info->exec_file != NULL)
-      {
-        file_allow_write (info->exec_file);
-        file_close (info->exec_file);
-      }
+    file_allow_write (info->exec_file);
+    file_close (info->exec_file);
   }
-  lock_release (&filesys_lock);
   lock_acquire (&info->info_lock);
   {
     info->terminated = true;
@@ -520,10 +516,8 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
       goto done; 
     }
 
-  lock_acquire (&filesys_lock);
   file_deny_write (file);
   int read_result = file_read (file, &ehdr, sizeof ehdr);
-  lock_release (&filesys_lock);
   /* Read and verify executable header. */
   if (read_result != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
@@ -543,18 +537,12 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
     {
       struct Elf32_Phdr phdr;
 
-      lock_acquire (&filesys_lock);
       bool fail = file_ofs < 0 || file_ofs > file_length (file);
-      lock_release (&filesys_lock);
       if (fail)
         goto done;
-      lock_acquire (&filesys_lock);
       file_seek (file, file_ofs);
-      lock_release (&filesys_lock);
 
-      lock_acquire (&filesys_lock);
       fail = file_read (file, &phdr, sizeof phdr) != sizeof phdr;
-      lock_release (&filesys_lock);
       if (fail)
         goto done;
       file_ofs += sizeof phdr;
@@ -615,12 +603,10 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
   /* We arrive here whether the load is successful or not. */
   if (!success)
     {
-      lock_acquire (&filesys_lock);
       if (file != NULL)
       {
         file_close (file);
       }
-      lock_release (&filesys_lock);
     }
   else
     {
@@ -644,9 +630,7 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
     return false; 
 
   /* p_offset must point within FILE. */
-  lock_acquire (&filesys_lock);
   bool fail = phdr->p_offset > (Elf32_Off) file_length (file);
-  lock_release (&filesys_lock);
   if (fail) 
     return false;
 
@@ -703,7 +687,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
-
   struct process_info *info = process_get_info (thread_current ()->tid);
   lock_acquire (&frame_magic_lock);
   lock_acquire (&info->info_lock);
