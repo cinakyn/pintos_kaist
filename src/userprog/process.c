@@ -139,6 +139,7 @@ process_info_init (struct process_info *info, tid_t tid)
   info->pid = get_next_pid ();
   info->name = NULL;
   info->terminated = false;
+  info->exec_file = NULL;
   memset (info->children, 0, sizeof (info->children));
   memset (info->owned_files, 0, sizeof (info->owned_files));
   memset (info->owned_mmap, 0, sizeof (info->owned_mmap));
@@ -265,28 +266,10 @@ process_exit (void)
   struct process_info *info = process_get_info (curr->tid);
   struct process_info *parent_info = info->parent;
 
-  /* modidfy process info */
-  lock_acquire (&info->info_lock);
-  {
-    info->terminated = true;
-  }
-  lock_release (&info->info_lock);
-  /* wait children which isn't terminated. */
-  size_t i;
-  for (i = 0; 
-       i < sizeof (info->children) / sizeof (info->children[0]);
-       ++i)
-    {
-      struct process_info *child_info = info->children[i];
-      if (child_info != NULL)
-        {
-          process_wait (child_info->inner_thread);
-        }
-    }
-
   /* ummap */
   lock_acquire (&frame_magic_lock);
   lock_acquire (&info->info_lock);
+  size_t i;
   for (i = 0;
        i < sizeof (info->owned_mmap) / sizeof (struct mmap_info *);
        ++i)
@@ -298,6 +281,32 @@ process_exit (void)
     }
   lock_release (&info->info_lock);
   lock_release (&frame_magic_lock);
+
+  /* modidfy process info */
+  lock_acquire (&filesys_lock);
+  {
+    file_allow_write (info->exec_file);
+    file_close (info->exec_file);
+  }
+  lock_release (&filesys_lock);
+  lock_acquire (&info->info_lock);
+  {
+    info->terminated = true;
+    info->exec_file = NULL;
+  }
+  lock_release (&info->info_lock);
+
+  /* wait children which isn't terminated. */
+  for (i = 0; 
+       i < sizeof (info->children) / sizeof (info->children[0]);
+       ++i)
+    {
+      struct process_info *child_info = info->children[i];
+      if (child_info != NULL)
+        {
+          process_wait (child_info->inner_thread);
+        }
+    }
 
 
   /* Destroy the current process's page directory and switch back
@@ -603,7 +612,16 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
   /* We arrive here whether the load is successful or not. */
   if (!success)
     {
+      lock_acquire (&filesys_lock);
       file_close (file);
+      lock_release (&filesys_lock);
+    }
+  else
+    {
+      struct process_info *info = process_get_info (thread_current ()->tid);
+      lock_acquire (&info->info_lock);
+      info->exec_file = file;
+      lock_release (&info->info_lock);
     }
   return success;
 }
@@ -759,6 +777,7 @@ setup_stack (void **esp, const char *cmd_line)
   lock_acquire (&frame_magic_lock);
   struct suppage_info *owner = suppage_create_info (
       &thread_current ()->sp,
+      &process_get_info (thread_current ()->tid)->info_lock,
       thread_current ()->pagedir,
       ((uint8_t *) PHYS_BASE) - PGSIZE,
       true);

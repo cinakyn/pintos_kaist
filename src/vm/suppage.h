@@ -29,12 +29,13 @@ struct suppage_info
   struct mmap_info *mmap_info;
   bool writable;
   struct hash_elem helem;
+  struct lock *proc_info_lock;
 };
 
 
 void suppage_init (struct suppage *sp);
 void suppage_clear (struct suppage *sp);
-struct suppage_info *suppage_create_info (struct suppage *sp, uint32_t *pagedir, void *upage, bool writable);
+struct suppage_info *suppage_create_info (struct suppage *sp, struct lock *proc_info_lock, uint32_t *pagedir, void *upage, bool writable);
 void suppage_set_mmap_info (struct suppage_info *sp, struct mmap_info *mmap_info, size_t index);
 void suppage_remove_info (struct suppage *sp, struct suppage_info *info);
 struct suppage_info *suppage_get_info (struct suppage *sp, void *upage);

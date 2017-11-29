@@ -143,12 +143,9 @@ mmap_swap_in (void *frame, void *vaddr, struct mmap_info *minfo)
     }
   if (content_size > 0)
     {
-      printf("lock1\n");
       lock_acquire (&filesys_lock);
-      printf("lock2\n");
       file_read_at (minfo->mapped_file, frame, content_size, (uintptr_t)vaddr - minfo->mapped_addr + minfo->ofs);
       lock_release (&filesys_lock);
-      printf("lock3\n");
     }
   if (content_size < PGSIZE)
     {

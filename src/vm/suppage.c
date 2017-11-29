@@ -54,7 +54,7 @@ suppage_remove_info (struct suppage *sp, struct suppage_info *info)
 }
 
 struct suppage_info *
-suppage_create_info (struct suppage *sp, uint32_t *pagedir, void *upage, bool writable)
+suppage_create_info (struct suppage *sp, struct lock* proc_info_lock, uint32_t *pagedir, void *upage, bool writable)
 {
   ASSERT (upage != NULL);
   struct suppage_info *info = malloc (sizeof (struct suppage_info));
@@ -64,6 +64,7 @@ suppage_create_info (struct suppage *sp, uint32_t *pagedir, void *upage, bool wr
   info->page = upage;
   info->writable = writable;
   info->mmap_info = NULL;
+  info->proc_info_lock = proc_info_lock;
   ASSERT (hash_insert (&sp->sp_map, &info->helem) == NULL);
   return info;
 }

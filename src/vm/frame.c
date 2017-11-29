@@ -137,6 +137,7 @@ take_away_frame (void)
   pagedir_clear_page (selected->owner->pagedir, selected->owner->page);
 
   /* first check mmap */
+  lock_acquire (selected->owner->proc_info_lock);
   struct mmap_info *map_info = selected->owner->mmap_info;
   if (map_info != NULL)
     {
@@ -153,6 +154,7 @@ take_away_frame (void)
       selected->owner->index = index;
       selected->owner->mt = MEM_TYPE_SWAP;
     }
+  lock_release (selected->owner->proc_info_lock);
   ASSERT (selected->owner->mt != MEM_TYPE_FRAME);
   selected->owner = NULL;
   return selected;

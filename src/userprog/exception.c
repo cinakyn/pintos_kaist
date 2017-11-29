@@ -13,7 +13,7 @@
 #include "lib/debug.h"
 
 #define MAX_STACK_SIZE (1 << 23)
-#define PRINT_FAULT_INFO true
+#define PRINT_FAULT_INFO false
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -177,7 +177,6 @@ page_fault (struct intr_frame *f)
     }
 
   lock_acquire (&frame_magic_lock);
-  printf ("fault start %p\n", thread_current ());
   bool success = true;
   uint32_t *pd = thread_current ()->pagedir;
   struct suppage *sp = &thread_current ()->sp;
@@ -203,9 +202,10 @@ page_fault (struct intr_frame *f)
       if ((uint32_t)(PHYS_BASE - (uintptr_t)upage) <= MAX_STACK_SIZE
           && ((uintptr_t)fault_addr >= ((uintptr_t)esp - (1 << 5))))
         {
-          printf ("2\n");
+          struct process_info *pinfo = process_get_info (thread_current ()->tid);
           struct suppage_info *new_info = suppage_create_info (
               sp,
+              &pinfo->info_lock,
               pd,
               upage,
               true);
@@ -217,32 +217,29 @@ page_fault (struct intr_frame *f)
           lock_acquire (&pinfo->info_lock);
           struct mmap_info *map_info
               = mmap_get_info (pinfo->owned_mmap, 256, fault_addr);
+          lock_release (&pinfo->info_lock);
           if (map_info != NULL)
             {
-              printf ("4\n");
               struct suppage_info *new_info = suppage_create_info (
                   sp,
+                  &pinfo->info_lock,
                   pd,
                   upage,
                   map_info->writable);
-              printf ("4-1\n");
               void *frame = frame_get (new_info);
-              printf ("4-2\n");
+              lock_acquire (&pinfo->info_lock);
               size_t index = mmap_swap_in (frame, upage, map_info);
-              printf ("4-3\n");
               if (!map_info->read_one_time)
               {
                 suppage_set_mmap_info (new_info, map_info, index);
               }
-              printf ("4-4\n");
+              lock_release (&pinfo->info_lock);
             }
           else
             {
-              printf ("5\n");
               f->cs = SEL_UCSEG;
               success = false;
             }
-          lock_release (&pinfo->info_lock);
         }
     }
   else if (write && !sp_info->writable)
@@ -252,23 +249,21 @@ page_fault (struct intr_frame *f)
     }
   else
     {
-      printf ("6\n");
       ASSERT (sp_info->mt != MEM_TYPE_FRAME);
       ASSERT (sp_info->mt != MEM_TYPE_INVALID);
       void *frame = frame_get (sp_info);
       if (sp_info->mmap_info == NULL)
         {
-          printf ("7\n");
           swap_in (sp_info->index, frame);
         }
       else
         {
-          printf ("8\n");
+          lock_acquire (sp_info->proc_info_lock);
           size_t index = mmap_swap_in (frame, upage, sp_info->mmap_info);
+          lock_release (sp_info->proc_info_lock);
           ASSERT (index == sp_info->index);
         }
     }
-  printf ("fault end %p\n", thread_current ());
   lock_release (&frame_magic_lock);
   if (!success)
     {

@@ -19,6 +19,7 @@ struct process_info
   struct lock wait_lock;
   struct lock info_lock;
   struct list_elem elem;
+  struct file *exec_file;
 };
 
 void process_init (void);

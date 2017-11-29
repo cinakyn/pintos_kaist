@@ -3,6 +3,7 @@
 #include "devices/disk.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "userprog/syscall.h"
 
 static struct lock swap_lock;
 static struct disk *swap_disk;
@@ -24,6 +25,7 @@ void swap_exit (void)
 
 void swap_in (size_t index, void *frame)
 {
+  lock_acquire (&filesys_lock);
   lock_acquire (&swap_lock);
     {
       ASSERT (bitmap_test (swap_map, index) == 1);
@@ -35,11 +37,13 @@ void swap_in (size_t index, void *frame)
         }
     }
   lock_release (&swap_lock);
+  lock_release (&filesys_lock);
 }
 
 size_t swap_out (void* frame)
 {
   size_t index;
+  lock_acquire (&filesys_lock);
   lock_acquire (&swap_lock);
     {
       index = bitmap_scan_and_flip (swap_map, 0, 1, 0);
@@ -51,15 +55,18 @@ size_t swap_out (void* frame)
         }
     }
   lock_release (&swap_lock);
+  lock_release (&filesys_lock);
   return index;
 }
 
 void swap_clear (size_t index)
 {
+  lock_acquire (&filesys_lock);
   lock_acquire (&swap_lock);
     {
       ASSERT (bitmap_test (swap_map, index) == 1);
       bitmap_flip (swap_map, index);
     }
   lock_release (&swap_lock);
+  lock_release (&filesys_lock);
 }
