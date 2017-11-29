@@ -104,10 +104,10 @@ mmap_remove_info (struct mmap_info** info_list, mapid_t id)
         {
           struct suppage *sp = &thread_current ()->sp;
           struct suppage_info *sp_info = suppage_get_info (sp, (void *)current);
-          if (sp_info != NULL)
+          if (sp_info != NULL )
             {
               ASSERT (sp_info->mmap_info == info);
-              if (pagedir_is_dirty (sp_info->pagedir, sp_info->page))
+              if (sp_info->mt == MEM_TYPE_FRAME && pagedir_is_dirty (sp_info->pagedir, sp_info->page))
                 {
                   mmap_swap_out (frame_with_owner (sp_info), sp_info->page, info);
                 }

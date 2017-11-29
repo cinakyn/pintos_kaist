@@ -259,6 +259,7 @@ static void syscall_open (void *sp, struct intr_frame *f)
     }
   lock_acquire (&filesys_lock);
   struct file *o = filesys_open (file_name);
+  lock_release (&filesys_lock);
   if (o == NULL)
     {
       f->eax  = -1;
@@ -289,7 +290,6 @@ static void syscall_open (void *sp, struct intr_frame *f)
         f->eax = i + 2;
       }
     }
-  lock_release (&filesys_lock);
 }
 
 static void syscall_filesize (void *sp, struct intr_frame *f)
@@ -372,6 +372,7 @@ static void syscall_read (void *sp, struct intr_frame *f)
             break;
         }
       f->eax = written;
+      return;
     }
   struct file *fp = get_file (fd);
   if (fp == NULL)
@@ -379,7 +380,10 @@ static void syscall_read (void *sp, struct intr_frame *f)
     f->eax = -1;
     return;
   }
-  f->eax = file_read (fp, buffer, size);
+  void *copied  = malloc (size);
+  f->eax = file_read (fp, copied, size);
+  memcpy (buffer, copied, f->eax);
+  free (copied);
 }
 
 static void syscall_write (void *sp, struct intr_frame *f)
@@ -428,6 +432,7 @@ static void syscall_write (void *sp, struct intr_frame *f)
     {
       f->eax = size;
       putbuf ((char *)buffer, size / sizeof (char));
+      return;
     }
   struct file *fp = get_file (fd);
   if (fp == NULL)
@@ -435,7 +440,10 @@ static void syscall_write (void *sp, struct intr_frame *f)
     f->eax = -1;
     return;
   }
-  f->eax = file_write (fp, buffer, size);
+  void *copied  = malloc (size);
+  memcpy (copied, buffer, size);
+  f->eax = file_write (fp, copied, size);
+  free (copied);
 }
 
 static void syscall_seek (void *sp, struct intr_frame *f UNUSED)

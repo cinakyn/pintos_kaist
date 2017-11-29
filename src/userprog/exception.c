@@ -195,10 +195,6 @@ page_fault (struct intr_frame *f)
   else if (sp_info == NULL)
     {
       // check stack growth
-      if (PRINT_FAULT_INFO)
-        {
-          printf ("fault info %p // %p (%p)\n", fault_addr, esp, upage);
-        }
       if ((uint32_t)(PHYS_BASE - (uintptr_t)upage) <= MAX_STACK_SIZE
           && ((uintptr_t)fault_addr >= ((uintptr_t)esp - (1 << 5))))
         {
