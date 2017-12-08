@@ -264,6 +264,11 @@ process_exit (void)
   uint32_t *pd;
 
   struct process_info *info = process_get_info (curr->tid);
+  if (info == NULL)
+  {
+    // thread without process.
+    return;
+  }
   struct process_info *parent_info = info->parent;
 
   /* ummap */
@@ -376,7 +381,6 @@ process_get_info (tid_t tid)
         }
     }
   lock_release (&pinfo_list_lock);
-  ASSERT (found != NULL);
   return found;
 }
 

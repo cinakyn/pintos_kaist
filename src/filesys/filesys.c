@@ -22,6 +22,7 @@ filesys_init (bool format)
   if (filesys_disk == NULL)
     PANIC ("hd0:1 (hdb) not present, file system initialization failed");
 
+  cache_init ();
   inode_init ();
   free_map_init ();
 
@@ -37,6 +38,7 @@ void
 filesys_done (void) 
 {
   free_map_close ();
+  cache_finish ();
 }
 
 /* Creates a file named NAME with the given INITIAL_SIZE.

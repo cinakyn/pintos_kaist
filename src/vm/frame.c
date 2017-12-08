@@ -52,10 +52,10 @@ frame_get (struct suppage_info *owner)
           /* make frame info */
           f_info = malloc (sizeof (struct frame_info));
           f_info->frame = frame;
+          /* insert into queue tail */
+          list_push_back (&frame_info_queue, &f_info->elem);
         }
       f_info->owner = owner;
-      /* insert into queue tail */
-      list_push_back (&frame_info_queue, &f_info->elem);
       hash_insert (&frame_info_hash, &f_info->helem);
       owner->mt = MEM_TYPE_FRAME;
       pagedir_set_page (owner->pagedir, owner->page, frame, owner->writable);
@@ -111,16 +111,29 @@ take_away_frame (void)
   struct list_elem *e = list_begin (&frame_info_queue);
   size_t frame_size = list_size (&frame_info_queue);
   size_t i;
+  static size_t clock = 0;
+  clock %= frame_size;
+
+  // go to clock index.
+  for (i = 0; i < clock; ++i)
+    {
+      e = list_next (e);
+    }
+
   for (i = 0; i < frame_size; ++i)
     {
       struct frame_info *info = list_entry (e, struct frame_info, elem);
       ASSERT (info->owner != NULL);
+      clock += 1;
+      clock %= frame_size;
       if (pagedir_is_accessed (info->owner->pagedir, info->owner->page))
         {
           pagedir_set_accessed (info->owner->pagedir, info->owner->page, false);
-          struct list_elem *next = list_remove (e);
-          list_push_back (&frame_info_queue, e);
-          e = next;
+          e = list_next (e);
+          if (e == list_end (&frame_info_queue))
+            {
+              e = list_begin (&frame_info_queue);
+            }
         }
       else
         {
@@ -130,9 +143,10 @@ take_away_frame (void)
     }
   if (selected == NULL)
     {
-      selected = list_entry (list_begin (&frame_info_queue), struct frame_info, elem);
+      selected = list_entry (e, struct frame_info, elem);
+      clock += 1;
+      clock %= frame_size;
     }
-  list_remove (&selected->elem);
   hash_delete (&frame_info_hash, &selected->helem);
   pagedir_clear_page (selected->owner->pagedir, selected->owner->page);
 
