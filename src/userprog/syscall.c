@@ -9,8 +9,11 @@
 #include "threads/thread.h"
 #include "threads/init.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "filesys/directory.h"
+#include "filesys/inode.h"
 #include "vm/mmap-file.h"
 #include "vm/frame.h"
 
@@ -31,6 +34,11 @@ static void syscall_close (void *sp, struct intr_frame *);
 static void syscall_close (void *sp, struct intr_frame *);
 static void syscall_mmap (void *sp, struct intr_frame *);
 static void syscall_munmap (void *sp, struct intr_frame *);
+static void syscall_chdir (void *sp, struct intr_frame *);
+static void syscall_mkdir (void *sp, struct intr_frame *);
+static void syscall_readdir (void *sp, struct intr_frame *);
+static void syscall_isdir (void *sp, struct intr_frame *);
+static void syscall_inumber (void *sp, struct intr_frame *);
 static int get_user (const uint8_t *uaddr);
 static bool put_user (uint8_t *udst, uint8_t byte);
 static bool is_valid_addr (void *vaddr, size_t size, bool writable);
@@ -103,6 +111,21 @@ syscall_handler (struct intr_frame *f)
         break;
       case SYS_MUNMAP:
         syscall_munmap (sp, f);
+        break;
+      case SYS_CHDIR:
+        syscall_chdir (sp, f);
+        break;
+      case SYS_MKDIR:
+        syscall_mkdir (sp, f);
+        break;
+      case SYS_READDIR:
+        syscall_readdir (sp, f);
+        break;
+      case SYS_ISDIR:
+        syscall_isdir (sp, f);
+        break;
+      case SYS_INUMBER:
+        syscall_inumber (sp, f);
         break;
       default:
         printf ("wtf\n");
@@ -218,7 +241,7 @@ static void syscall_create (void *sp, struct intr_frame *f)
       return;
     }
   lock_acquire (&filesys_lock);
-  f->eax = filesys_create (file_name, initial_size);
+  f->eax = filesys_create (file_name, initial_size, false);
   lock_release (&filesys_lock);
 }
 
@@ -380,6 +403,11 @@ static void syscall_read (void *sp, struct intr_frame *f)
     f->eax = -1;
     return;
   }
+  if (inode_is_dir (file_get_inode (fp)))
+  {
+    f->eax = -1;
+    return;
+  }
   void *copied  = malloc (size);
   f->eax = file_read (fp, copied, size);
   memcpy (buffer, copied, f->eax);
@@ -436,6 +464,11 @@ static void syscall_write (void *sp, struct intr_frame *f)
     }
   struct file *fp = get_file (fd);
   if (fp == NULL)
+  {
+    f->eax = -1;
+    return;
+  }
+  if (inode_is_dir (file_get_inode (fp)))
   {
     f->eax = -1;
     return;
@@ -602,6 +635,161 @@ syscall_munmap (void *sp, struct intr_frame *f)
   mmap_remove_info (proc_info->owned_mmap, id);
   lock_release (&proc_info->info_lock);
   lock_release (&frame_magic_lock);
+}
+
+static void syscall_chdir (void *sp, struct intr_frame *f)
+{
+  char *path;
+  if (!copy_value (sp, &path, sizeof (path)))
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (!is_valid_str (path))
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  struct file *file = filesys_open (path);
+  if (file != NULL && file_get_inner_dir (file) != NULL)
+  {
+    f->eax = true;
+    if (thread_current ()->current_dir)
+    {
+      dir_close (thread_current ()->current_dir);
+    }
+    thread_current ()->current_dir = dir_reopen (file_get_inner_dir (file));
+  }
+  else
+  {
+    f->eax = false;
+  }
+  file_close (file);
+}
+
+static void syscall_mkdir (void *sp, struct intr_frame *f)
+{
+  char *path;
+  if (!copy_value (sp, &path, sizeof (path)))
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (!is_valid_str (path))
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  bool result = filesys_create (path, 0, true);
+  f->eax = result;
+}
+
+static void syscall_readdir (void *sp, struct intr_frame *f)
+{
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (fd < 2)
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (get_file (fd) == NULL)
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  sp += sizeof (fd);
+  char *buffer;
+  if (!copy_value (sp, &buffer, sizeof (buffer)))
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (!is_valid_addr (buffer, READDIR_MAX_LEN + 1, true))
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+
+  struct file *file = get_file (fd);
+  if (file_get_inner_dir (file) == NULL)
+  {
+    f->eax = false;
+  }
+  else
+  {
+    char *temp = malloc (READDIR_MAX_LEN + 1);
+    bool success = dir_readdir (file_get_inner_dir (file), temp);
+    if (success)
+    {
+      strlcpy (buffer, temp, READDIR_MAX_LEN);
+    }
+    f->eax = success;
+    free (temp);
+  }
+}
+
+static void syscall_isdir (void *sp, struct intr_frame *f)
+{
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (fd < 2)
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (get_file (fd) == NULL)
+    {
+      f->eax = false;
+      syscall_exit_status (-1);
+      return;
+    }
+  struct file *file = get_file (fd);
+  f->eax = inode_is_dir (file_get_inode (file));
+}
+
+static void syscall_inumber (void *sp, struct intr_frame *f)
+{
+  int fd;
+  if (!copy_value (sp, &fd, sizeof (fd)))
+    {
+      f->eax = -1;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (fd < 2)
+    {
+      f->eax = -1;
+      syscall_exit_status (-1);
+      return;
+    }
+  if (get_file (fd) == NULL)
+    {
+      f->eax = -1;
+      syscall_exit_status (-1);
+      return;
+    }
+  struct file *file = get_file (fd);
+  f->eax = inode_get_inumber (file_get_inode (file));
 }
 
 /* Reads a byte at user virtual address UADDR.

@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include "threads/synch.h"
 #include "vm/suppage.h"
+#include "filesys/directory.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -102,6 +103,7 @@ struct thread
     struct suppage sp;
     void *esp_backup;
 #endif
+    struct dir *current_dir;
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */

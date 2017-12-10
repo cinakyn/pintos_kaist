@@ -288,7 +288,7 @@ process_exit (void)
   lock_release (&frame_magic_lock);
 
   /* modidfy process info */
-if (info->exec_file != NULL)
+  if (info->exec_file != NULL)
   {
     file_allow_write (info->exec_file);
     file_close (info->exec_file);

@@ -10,6 +10,7 @@
 #include "threads/palloc.h"
 #include "threads/switch.h"
 #include "threads/vaddr.h"
+#include "filesys/directory.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -286,6 +287,10 @@ thread_exit (void)
   /* Just set our status to dying and schedule another process.
      We will be destroyed during the call to schedule_tail(). */
   intr_disable ();
+  if (thread_current ()->current_dir)
+  {
+    dir_close (thread_current ()->current_dir);
+  }
   thread_current ()->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
@@ -439,6 +444,13 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
   t->esp_backup = NULL;
+  struct thread *parent = running_thread ();
+  if (is_thread (parent) 
+      && parent->status == THREAD_RUNNING
+      && parent->current_dir != NULL)
+  {
+    t->current_dir = dir_reopen (thread_current ()->current_dir);
+  }
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
