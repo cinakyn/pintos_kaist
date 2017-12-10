@@ -26,7 +26,7 @@ struct read_ahead_entry {
 
 static struct lock cache_lock;
 static struct cache_info cache[CACHE_SIZE];
-static struct hash cache_hash;
+static struct hash cache_hash UNUSED;
 static struct list read_ahead_queue;
 static struct lock read_ahead_lock;
 static struct condition read_ahead_cond;
@@ -46,8 +46,8 @@ static struct cache_info* get_empty_cache (void);
 static struct cache_info* evict_cache (void);
 static void read_ahead_func (void *aux);
 static void write_behind_func (void *aux);
-static unsigned cache_hash_func(const struct hash_elem *, void *);
-static bool cache_less_func(const struct hash_elem *, const struct hash_elem *, void *);
+static unsigned cache_hash_func(const struct hash_elem *, void *) UNUSED;
+static bool cache_less_func(const struct hash_elem *, const struct hash_elem *, void *) UNUSED;
 
 void
 cache_init (void)
@@ -96,9 +96,22 @@ cache_finish (void)
 void
 cache_read (disk_sector_t sector, void *buffer)
 {
+  cache_read_len (sector, buffer, 0, DISK_SECTOR_SIZE);
+}
+
+void
+cache_write (disk_sector_t sector, const void *buffer)
+{
+  cache_write_len (sector, buffer, 0, DISK_SECTOR_SIZE);
+}
+
+void
+cache_read_len (disk_sector_t sector, void *buffer, off_t offset, off_t len)
+{
   add_access_count ();
+  ASSERT (offset + len <= DISK_SECTOR_SIZE);
   struct cache_info* info = get_or_evict_cache (sector);
-  memcpy (buffer, info->buffer, DISK_SECTOR_SIZE);
+  memcpy (buffer, info->buffer + offset, len);
   info->access = true;
   sub_access_count ();
 
@@ -111,11 +124,12 @@ cache_read (disk_sector_t sector, void *buffer)
 }
 
 void
-cache_write (disk_sector_t sector, const void *buffer)
+cache_write_len (disk_sector_t sector, const void *buffer, off_t offset, off_t len)
 {
   add_access_count ();
+  ASSERT (offset + len <= DISK_SECTOR_SIZE);
   struct cache_info* info = get_or_evict_cache (sector);
-  memcpy (info->buffer, buffer, DISK_SECTOR_SIZE);
+  memcpy (info->buffer + offset, buffer, len);
   info->access = true;
   info->dirty = true;
   sub_access_count ();
