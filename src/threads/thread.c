@@ -283,14 +283,14 @@ thread_exit (void)
 #ifdef USERPROG
   process_exit ();
 #endif
-
-  /* Just set our status to dying and schedule another process.
-     We will be destroyed during the call to schedule_tail(). */
-  intr_disable ();
   if (thread_current ()->current_dir)
   {
     dir_close (thread_current ()->current_dir);
   }
+
+  /* Just set our status to dying and schedule another process.
+     We will be destroyed during the call to schedule_tail(). */
+  intr_disable ();
   thread_current ()->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();

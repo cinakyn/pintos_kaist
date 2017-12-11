@@ -36,10 +36,6 @@ free_map_allocate (size_t cnt, disk_sector_t *sectorp)
     }
   if (sector != BITMAP_ERROR)
     *sectorp = sector;
-  if (sector == BITMAP_ERROR)
-  {
-    printf ("free-map alloc fail\n");
-  }
   return sector != BITMAP_ERROR;
 }
 

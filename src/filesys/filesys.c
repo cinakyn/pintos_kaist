@@ -52,7 +52,6 @@ filesys_done (void)
 bool
 filesys_create (const char *name, off_t initial_size, bool is_dir)
 {
-  printf ("create: name %s\n", name);
   if (strlen (name) == 0)
   {
     return false;
@@ -88,7 +87,6 @@ filesys_create (const char *name, off_t initial_size, bool is_dir)
     {
       break;
     }
-    printf ("create: token %s\n", token);
     struct inode *current_node;
     if (dir_lookup (current_dir, token, &current_node))
     {
@@ -113,7 +111,6 @@ filesys_create (const char *name, off_t initial_size, bool is_dir)
       }
     }
   }
-  printf ("create: filename %s\n", token);
   if (token == NULL || strlen (token) == 0)
   {
     success = false;
@@ -158,7 +155,6 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
-  printf ("remove: name %s\n", name);
   if (strlen (name) == 0)
   {
     return false;
@@ -198,7 +194,6 @@ filesys_remove (const char *name)
     {
       break;
     }
-    printf ("remove: token %s\n", token);
     struct inode *current_node;
     if (dir_lookup (current_dir, token, &current_node))
     {
@@ -217,7 +212,6 @@ filesys_remove (const char *name)
     }
   }
 
-  printf ("remove: filename %s\n", token);
   if (token == NULL || strlen (token) == 0)
   {
     success = false;
@@ -271,7 +265,6 @@ do_format (void)
 static struct inode *
 filesys_open_inode (const char *name)
 {
-  printf ("open_inode: name %s\n", name);
   if (strlen (name) == 0)
   {
     return NULL;
@@ -307,7 +300,6 @@ filesys_open_inode (const char *name)
     {
       break;
     }
-    printf ("open_inode: token %s\n", token);
     struct inode *current_node;
     if (dir_lookup (current_dir, token, &current_node))
     {
@@ -326,7 +318,6 @@ filesys_open_inode (const char *name)
     }
   }
 
-  printf ("open_inode: filename %s\n", token);
   struct inode *result = NULL;
   if (success)
   {

@@ -109,6 +109,7 @@ inode_create (disk_sector_t sector, off_t length, bool is_dir)
   struct inode_disk *disk_inode = NULL;
 
   ASSERT (length >= 0);
+  ASSERT (sector < (uint32_t) -1);
 
   /* If this assertion fails, the inode structure is not exactly
      one sector in size, and you should fix that. */
@@ -125,6 +126,10 @@ inode_create (disk_sector_t sector, off_t length, bool is_dir)
   disk_inode->magic = INODE_MAGIC;
   disk_inode->doubly_indirect_disk = sector_for_first;
   struct inode_indirect_disk *first_disk = malloc (sizeof (struct inode_indirect_disk));
+  if (first_disk == NULL)
+  {
+    printf ("inode_create: malloc fail\n");
+  }
   inode_init_indirect_disk (first_disk);
   cache_write (disk_inode->doubly_indirect_disk, first_disk);
   cache_write (sector, disk_inode);
@@ -170,6 +175,7 @@ inode_open (disk_sector_t sector)
   inode = malloc (sizeof *inode);
   if (inode == NULL) {
     lock_release (&open_inodes_lock);
+    printf ("inode_open: malloc fail\n");
     return NULL;
   }
 
@@ -563,6 +569,7 @@ inode_expand (struct inode* node, off_t from, off_t to)
   cache_write (di_sector, first_disk);
   free (first_disk);
   ASSERT (i == alloc_count);
+  free (sector_arr);
   return true;
 }
 
